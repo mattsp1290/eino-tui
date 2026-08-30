@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Eino TUI Milestone"
+  short_description: "Choose the next Eino TUI increment"
+  default_prompt: "Use $implementation-plan $next-milestone to research and plan the next Eino TUI milestone."
