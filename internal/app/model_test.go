@@ -61,7 +61,7 @@ func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 	}
 	model.textarea.SetValue("hello\nworld")
 	_, startCmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if startCmd == nil || model.phase != runtimeui.PhaseStarting {
+	if startCmd == nil || model.snapshot.Phase != runtimeui.PhaseStarting {
 		t.Fatal("submit did not start")
 	}
 	_, next := model.Update(startCmd())
@@ -73,7 +73,7 @@ func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 		t.Fatalf("live = %#v", model.snapshot)
 	}
 	_, next = model.Update(next())
-	if model.phase != runtimeui.PhaseIdle || model.pending != nil || len(model.snapshot.Messages) != 2 {
+	if model.snapshot.Phase != runtimeui.PhaseIdle || model.pending != nil || len(model.snapshot.Messages) != 2 {
 		t.Fatalf("terminal = %#v", model.snapshot)
 	}
 }
@@ -92,7 +92,7 @@ func TestKeysPasteAndResize(t *testing.T) {
 	if keys := model.textarea.KeyMap.InsertNewline.Keys(); len(keys) != 1 || keys[0] != "alt+enter" {
 		t.Fatalf("newline keys = %#v", keys)
 	}
-	model.phase = runtimeui.PhaseRunning
+	model.snapshot.Phase = runtimeui.PhaseRunning
 	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("escape did not interrupt")
@@ -122,7 +122,7 @@ func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
 	run := newFakeRun("current")
 	model.pending = run
 	model.lastVersion = 5
-	model.phase = runtimeui.PhaseRunning
+	model.snapshot.Phase = runtimeui.PhaseRunning
 	model.snapshot = runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "current"}
 	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "prior", Version: 99, LiveAssistant: "wrong"}, ok: true})
 	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "also wrong"}, ok: true})
@@ -137,10 +137,10 @@ func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
 
 func TestRecoveryWaitingReplacesDeadlineAndRetainsDraft(t *testing.T) {
 	model := New(context.Background(), &fakeService{})
-	model.phase = runtimeui.PhaseRecoveryWaiting
+	model.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 	model.textarea.SetValue("unsent")
 	_, recoverCommand := model.Update(recoveryDueMsg{})
-	if recoverCommand == nil || model.phase != runtimeui.PhaseRecovering {
+	if recoverCommand == nil || model.snapshot.Phase != runtimeui.PhaseRecovering {
 		t.Fatal("recovery was not scheduled")
 	}
 	refreshed := time.Now().Add(time.Minute)
@@ -148,6 +148,37 @@ func TestRecoveryWaitingReplacesDeadlineAndRetainsDraft(t *testing.T) {
 	_, timer := model.Update(recoveredMsg{result: waiting})
 	if timer == nil || !model.snapshot.RecoveryAt.Equal(refreshed) || model.textarea.Value() != "unsent" {
 		t.Fatalf("waiting state=%#v draft=%q", model.snapshot, model.textarea.Value())
+	}
+}
+
+func TestSnapshotPhaseDrivesKeysStatusAndEditing(t *testing.T) {
+	tests := []struct {
+		phase      runtimeui.Phase
+		editable   bool
+		interrupts bool
+	}{
+		{phase: runtimeui.PhaseIdle, editable: true},
+		{phase: runtimeui.PhaseStarting, interrupts: true},
+		{phase: runtimeui.PhaseRunning, interrupts: true},
+		{phase: runtimeui.PhaseRecoveryWaiting},
+		{phase: runtimeui.PhaseRecovering},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.phase), func(t *testing.T) {
+			model := New(context.Background(), &fakeService{})
+			model.snapshot.Phase = tt.phase
+			model.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+			if got := model.textarea.Value() != ""; got != tt.editable {
+				t.Fatalf("editable=%v value=%q", tt.editable, model.textarea.Value())
+			}
+			if view := model.View().Content; !strings.Contains(view, phaseText(tt.phase)) {
+				t.Fatalf("view status does not reflect %q: %q", tt.phase, view)
+			}
+			_, interrupt := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+			if (interrupt != nil) != tt.interrupts {
+				t.Fatalf("interrupt command=%v", interrupt != nil)
+			}
+		})
 	}
 }
 

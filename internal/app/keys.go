@@ -13,17 +13,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, func() tea.Msg { return tea.Quit() }
 	case "ctrl+d":
-		if m.phase == runtimeui.PhaseIdle {
+		if m.snapshot.Phase == runtimeui.PhaseIdle {
 			return m, func() tea.Msg { return tea.Quit() }
 		}
 		return m, nil
 	case "esc":
-		if m.phase == runtimeui.PhaseStarting || m.phase == runtimeui.PhaseRunning {
+		if m.snapshot.Phase == runtimeui.PhaseStarting || m.snapshot.Phase == runtimeui.PhaseRunning {
 			return m, m.interruptCmd()
 		}
 		return m, nil
 	case "enter":
-		if m.phase != runtimeui.PhaseIdle {
+		if m.snapshot.Phase != runtimeui.PhaseIdle {
 			return m, nil
 		}
 		prompt, err := textsafe.Prompt(m.textarea.Value())
@@ -34,12 +34,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.snapshot.Notice = "Message is too large."
 			return m, nil
 		}
-		m.phase = runtimeui.PhaseStarting
-		m.draftStarting = prompt
+		m.snapshot.Phase = runtimeui.PhaseStarting
 		m.snapshot.Notice = ""
 		return m, m.startCmd(prompt)
 	}
-	if m.phase != runtimeui.PhaseIdle {
+	if m.snapshot.Phase != runtimeui.PhaseIdle {
 		return m, nil
 	}
 	before := m.textarea.Value()

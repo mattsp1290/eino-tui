@@ -38,7 +38,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return
 		}
 		if program != nil {
-			_ = program.ReleaseTerminal()
+			releaseProgram(program)
 		}
 		if service != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -88,17 +88,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	var fatal *app.Fatal
-	var constructionPanic bool
-	program, fatal, constructionPanic = buildProgram(deps, appCtx, service, stop, stdin, stdout)
-	if constructionPanic {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		_, _ = closeService(service, cleanupCtx)
-		cancel()
-		fmt.Fprintln(stderr, app.FatalDiagnostic)
-		return ExitFatal
+	model, fatal := deps.NewApplication(appCtx, service, stop)
+	program = deps.NewProgram(model, appCtx, stdin, stdout)
+	if program == nil {
+		panic("nil program")
 	}
-	_, programErr, recovered := runProgram(program)
+	_, programErr := program.Run()
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	closeErr, closePanic := closeService(service, cleanupCtx)
 	cancel()
@@ -110,7 +105,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, forcedDiagnostic)
 		return ExitForcedShutdown
 	}
-	if recovered || fatal.Marked() {
+	if fatal.Marked() {
 		fmt.Fprintln(stderr, app.FatalDiagnostic)
 		return ExitFatal
 	}
@@ -131,29 +126,7 @@ func closeService(service runtimeui.Service, ctx context.Context) (err error, re
 	return service.Close(ctx), false
 }
 
-func buildProgram(deps Dependencies, ctx context.Context, service runtimeui.Service, cancel context.CancelFunc, stdin io.Reader, stdout io.Writer) (program Program, fatal *app.Fatal, recovered bool) {
-	defer func() {
-		if recover() != nil {
-			program = nil
-			fatal = nil
-			recovered = true
-		}
-	}()
-	model, fatal := deps.NewApplication(ctx, service, cancel)
-	program = deps.NewProgram(model, ctx, stdin, stdout)
-	if program == nil {
-		panic("nil program")
-	}
-	return program, fatal, false
-}
-
-func runProgram(program Program) (model tea.Model, err error, recovered bool) {
-	defer func() {
-		if recover() != nil {
-			recovered = true
-			_ = program.ReleaseTerminal()
-		}
-	}()
-	model, err = program.Run()
-	return model, err, false
+func releaseProgram(program Program) {
+	defer func() { _ = recover() }()
+	_ = program.ReleaseTerminal()
 }

@@ -19,12 +19,8 @@ type Model struct {
 	textarea         textarea.Model
 	viewport         viewport.Model
 	snapshot         runtimeui.Snapshot
-	phase            runtimeui.Phase
 	pending          runtimeui.Run
 	lastVersion      uint64
-	width            int
-	height           int
-	draftStarting    string
 	stableWidth      int
 	stableMessages   []runtimeui.Message
 	stableTranscript string
@@ -41,7 +37,7 @@ func New(ctx context.Context, service runtimeui.Service) *Model {
 	input.Focus()
 	view := viewport.New()
 	view.SoftWrap = true
-	return &Model{ctx: ctx, service: service, textarea: input, viewport: view, phase: runtimeui.PhaseIdle}
+	return &Model{ctx: ctx, service: service, textarea: input, viewport: view, snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}}
 }
 
 func (m *Model) Init() tea.Cmd { return m.loadCmd() }
@@ -97,21 +93,19 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.applyLoad(msg.snapshot)
-		if m.phase == runtimeui.PhaseRecoveryWaiting {
+		if m.snapshot.Phase == runtimeui.PhaseRecoveryWaiting {
 			return m, recoveryTimer(m.ctx, msg.snapshot.RecoveryAt)
 		}
 		return m, nil
 	case startedMsg:
-		m.draftStarting = ""
 		if msg.err != nil {
-			m.phase = runtimeui.PhaseIdle
+			m.snapshot.Phase = runtimeui.PhaseIdle
 			if !errors.Is(msg.err, context.Canceled) {
 				m.snapshot.Notice = "The message could not be started."
 			}
 			return m, nil
 		}
 		if msg.result.Kind == runtimeui.ActionRecoveryWaiting {
-			m.phase = runtimeui.PhaseRecoveryWaiting
 			m.snapshot = msg.result.Snapshot
 			return m, recoveryTimer(m.ctx, msg.result.Snapshot.RecoveryAt)
 		}
@@ -126,10 +120,10 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot = msg.snapshot
 			m.lastVersion = msg.snapshot.Version
 			if msg.snapshot.Terminal {
-				m.phase = runtimeui.PhaseIdle
+				m.snapshot.Phase = runtimeui.PhaseIdle
 				m.pending = nil
 			} else {
-				m.phase = runtimeui.PhaseRunning
+				m.snapshot.Phase = runtimeui.PhaseRunning
 			}
 			m.refreshTranscript()
 		}
@@ -138,19 +132,18 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case recoveryDueMsg:
-		if m.phase == runtimeui.PhaseRecoveryWaiting {
-			m.phase = runtimeui.PhaseRecovering
+		if m.snapshot.Phase == runtimeui.PhaseRecoveryWaiting {
+			m.snapshot.Phase = runtimeui.PhaseRecovering
 			return m, m.recoveryCmd()
 		}
 		return m, nil
 	case recoveredMsg:
 		if msg.err != nil {
-			m.phase = runtimeui.PhaseRecoveryWaiting
+			m.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 			m.snapshot.Notice = runtimeui.NoticeRecoveryWaiting
 			return m, recoveryTimer(m.ctx, time.Now().Add(time.Second))
 		}
 		if msg.result.Kind == runtimeui.ActionRecoveryWaiting {
-			m.phase = runtimeui.PhaseRecoveryWaiting
 			m.snapshot = msg.result.Snapshot
 			return m, recoveryTimer(m.ctx, msg.result.Snapshot.RecoveryAt)
 		}
@@ -165,7 +158,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.PasteMsg:
-		if m.phase != runtimeui.PhaseIdle {
+		if m.snapshot.Phase != runtimeui.PhaseIdle {
 			return m, nil
 		}
 		value, err := textsafe.Input(m.textarea.Value() + msg.Content)
@@ -176,7 +169,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	if m.phase == runtimeui.PhaseIdle {
+	if m.snapshot.Phase == runtimeui.PhaseIdle {
 		before := m.textarea.Value()
 		updated, cmd := m.textarea.Update(message)
 		m.textarea = updated
@@ -194,7 +187,6 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyLoad(snapshot runtimeui.Snapshot) {
 	m.snapshot = snapshot
-	m.phase = snapshot.Phase
 	m.refreshTranscript()
 }
 
@@ -202,7 +194,7 @@ func (m *Model) installRun(result runtimeui.ActionResult) {
 	m.pending = result.Run
 	m.snapshot = result.Snapshot
 	m.lastVersion = result.Snapshot.Version
-	m.phase = runtimeui.PhaseRunning
+	m.snapshot.Phase = runtimeui.PhaseRunning
 	m.refreshTranscript()
 }
 
@@ -213,7 +205,6 @@ func (m *Model) resize(width, height int) {
 	if height < 1 {
 		height = 1
 	}
-	m.width, m.height = width, height
 	contentWidth := width - 2
 	if contentWidth < 1 {
 		contentWidth = 1

@@ -12,7 +12,7 @@ func TestEnterBlankAndControlDContract(t *testing.T) {
 	model := New(context.Background(), &fakeService{})
 	model.textarea.SetValue(" \n")
 	_, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if command != nil || model.phase != runtimeui.PhaseIdle {
+	if command != nil || model.snapshot.Phase != runtimeui.PhaseIdle {
 		t.Fatal("blank prompt submitted")
 	}
 	model.textarea.SetValue("unsent draft")
@@ -23,7 +23,7 @@ func TestEnterBlankAndControlDContract(t *testing.T) {
 	if _, ok := command().(tea.QuitMsg); !ok {
 		t.Fatalf("ctrl+d command = %T", command())
 	}
-	model.phase = runtimeui.PhaseRecoveryWaiting
+	model.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 	_, command = model.Update(tea.KeyPressMsg{Code: 'd', Text: "d", Mod: tea.ModCtrl})
 	if command != nil {
 		t.Fatal("ctrl+d quit during recovery")

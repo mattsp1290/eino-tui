@@ -17,9 +17,10 @@ import (
 )
 
 type testProgram struct {
-	err        error
-	panicValue any
-	released   bool
+	err          error
+	panicValue   any
+	releasePanic any
+	released     bool
 }
 
 func (p *testProgram) Run() (tea.Model, error) {
@@ -28,7 +29,13 @@ func (p *testProgram) Run() (tea.Model, error) {
 	}
 	return nil, p.err
 }
-func (p *testProgram) ReleaseTerminal() error { p.released = true; return nil }
+func (p *testProgram) ReleaseTerminal() error {
+	p.released = true
+	if p.releasePanic != nil {
+		panic(p.releasePanic)
+	}
+	return nil
+}
 
 type testService struct {
 	close  func(context.Context) error
@@ -125,6 +132,7 @@ func TestRunExitPoliciesAndRedaction(t *testing.T) {
 		{name: "normal", program: &testProgram{}, service: &testService{}, want: ExitOK},
 		{name: "program error", program: &testProgram{err: errors.New("secret /tmp/path")}, service: &testService{}, want: ExitProgram, diagnostic: programDiagnostic},
 		{name: "panic", program: &testProgram{panicValue: "secret /tmp/path"}, service: &testService{}, want: ExitFatal, diagnostic: "internal application error"},
+		{name: "panic during terminal release", program: &testProgram{panicValue: "secret /tmp/path", releasePanic: "secret release /tmp/path"}, service: &testService{}, want: ExitFatal, diagnostic: "internal application error"},
 		{name: "forced close", program: &testProgram{}, service: &testService{close: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }}, want: ExitForcedShutdown, diagnostic: forcedDiagnostic},
 	}
 	for _, tt := range tests {

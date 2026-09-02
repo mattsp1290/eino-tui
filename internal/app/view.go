@@ -52,7 +52,7 @@ func (m *Model) View() tea.View {
 	header := headerStyle.Render("eino-tui · credential-free demo")
 	notice := m.snapshot.Notice
 	if notice == "" {
-		notice = phaseText(m.phase)
+		notice = phaseText(m.snapshot.Phase)
 	}
 	content := header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\nEnter send · Alt+Enter newline · Esc interrupt · Ctrl+C quit"
 	view := tea.NewView(content)

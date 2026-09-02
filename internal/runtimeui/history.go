@@ -13,87 +13,96 @@ const maxTranscriptBytes = 2 << 20
 
 func loadHistory(ctx context.Context, store session.Store, sessionID session.ID) ([]Message, error) {
 	cursor := session.ReplayCursor{Limit: 100}
-	var messages []session.Message
-	var parts []session.Part
+	window := transcriptWindow{limit: maxTranscriptBytes}
+	runs := make(map[session.RunID]session.Run)
 	for {
 		batch, err := store.ListMessages(ctx, sessionID, cursor)
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, batch.Messages...)
-		parts = append(parts, batch.Parts...)
+		partsByMessage := make(map[session.MessageID][]session.Part)
+		for _, part := range batch.Parts {
+			partsByMessage[part.MessageID] = append(partsByMessage[part.MessageID], part)
+		}
+		for _, durable := range batch.Messages {
+			message, ok, err := projectMessage(ctx, store, durable, partsByMessage[durable.ID], runs)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				window.Push(message)
+			}
+		}
 		if batch.Next == (session.ReplayCursor{}) {
 			break
 		}
 		cursor = batch.Next
 	}
-	partsByMessage := make(map[session.MessageID][]session.Part)
-	for _, part := range parts {
-		partsByMessage[part.MessageID] = append(partsByMessage[part.MessageID], part)
-	}
-	runs := make(map[session.RunID]session.Run)
-	result := make([]Message, 0, len(messages))
-	for _, durable := range messages {
-		if durable.Role != session.RoleUser && durable.Role != session.RoleAssistant {
-			continue
-		}
-		projected, err := history.Project(session.ReplayBatch{Messages: []session.Message{durable}, Parts: partsByMessage[durable.ID]}, history.Options{IncludeReasoning: false, IncludeState: false})
-		if err != nil {
-			return nil, err
-		}
-		content := ""
-		if len(projected) > 0 && projected[0] != nil {
-			content = textsafe.Display(projected[0].Content)
-		}
-		if durable.Role == session.RoleAssistant && content == "" {
-			continue
-		}
-		message := Message{ID: string(durable.ID), Content: content, Status: StatusComplete}
-		if durable.Role == session.RoleUser {
-			message.Role = RoleUser
-		} else {
-			message.Role = RoleAssistant
-		}
-		if durable.RunID != "" {
-			run, ok := runs[durable.RunID]
-			if !ok {
-				run, err = store.GetRun(ctx, durable.RunID)
-				if err != nil && !errors.Is(err, session.ErrNotFound) {
-					return nil, err
-				}
-				runs[durable.RunID] = run
-			}
-			switch run.Status {
-			case session.RunInterrupted:
-				message.Status = StatusInterrupted
-			case session.RunFailed:
-				message.Status = StatusFailed
-			}
-		}
-		result = append(result, message)
-	}
-	return retainNewestWithinBudget(result, maxTranscriptBytes), nil
+	return window.Items(), nil
 }
 
-func retainNewestWithinBudget(messages []Message, limit int) []Message {
-	if limit < 0 {
-		limit = 0
+func projectMessage(ctx context.Context, store session.Store, durable session.Message, parts []session.Part, runs map[session.RunID]session.Run) (Message, bool, error) {
+	if durable.Role != session.RoleUser && durable.Role != session.RoleAssistant {
+		return Message{}, false, nil
 	}
-	start := len(messages)
-	used := 0
-	for start > 0 {
-		size := len(messages[start-1].Content)
-		if start < len(messages) && used+size > limit {
-			break
+	projected, err := history.Project(session.ReplayBatch{Messages: []session.Message{durable}, Parts: parts}, history.Options{IncludeReasoning: false, IncludeState: false})
+	if err != nil {
+		return Message{}, false, err
+	}
+	content := ""
+	if len(projected) > 0 && projected[0] != nil {
+		content = textsafe.Display(projected[0].Content)
+	}
+	if durable.Role == session.RoleAssistant && content == "" {
+		return Message{}, false, nil
+	}
+	message := Message{ID: string(durable.ID), Content: content, Status: StatusComplete}
+	if durable.Role == session.RoleUser {
+		message.Role = RoleUser
+	} else {
+		message.Role = RoleAssistant
+	}
+	if durable.RunID != "" {
+		run, ok := runs[durable.RunID]
+		if !ok {
+			run, err = store.GetRun(ctx, durable.RunID)
+			if err != nil && !errors.Is(err, session.ErrNotFound) {
+				return Message{}, false, err
+			}
+			runs[durable.RunID] = run
 		}
-		used += size
-		start--
+		switch run.Status {
+		case session.RunInterrupted:
+			message.Status = StatusInterrupted
+		case session.RunFailed:
+			message.Status = StatusFailed
+		}
 	}
-	if start == 0 {
-		return messages
+	return message, true, nil
+}
+
+type transcriptWindow struct {
+	limit   int
+	used    int
+	omitted bool
+	items   []Message
+}
+
+func (w *transcriptWindow) Push(message Message) {
+	w.items = append(w.items, message)
+	w.used += len(message.Content)
+	for len(w.items) > 1 && w.used > w.limit {
+		w.used -= len(w.items[0].Content)
+		w.items = w.items[1:]
+		w.omitted = true
 	}
-	bounded := make([]Message, 0, len(messages)-start+1)
+}
+
+func (w *transcriptWindow) Items() []Message {
+	if !w.omitted {
+		return w.items
+	}
+	bounded := make([]Message, 0, len(w.items)+1)
 	bounded = append(bounded, Message{Role: RoleNotice, Content: NoticeHistoryOmitted, Status: StatusComplete})
-	bounded = append(bounded, messages[start:]...)
-	return bounded
+	return append(bounded, w.items...)
 }
