@@ -9,6 +9,8 @@ import (
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
+const maxTranscriptBytes = 2 << 20
+
 func loadHistory(ctx context.Context, store session.Store, sessionID session.ID) ([]Message, error) {
 	cursor := session.ReplayCursor{Limit: 100}
 	var messages []session.Message
@@ -70,5 +72,28 @@ func loadHistory(ctx context.Context, store session.Store, sessionID session.ID)
 		}
 		result = append(result, message)
 	}
-	return result, nil
+	return retainNewestWithinBudget(result, maxTranscriptBytes), nil
+}
+
+func retainNewestWithinBudget(messages []Message, limit int) []Message {
+	if limit < 0 {
+		limit = 0
+	}
+	start := len(messages)
+	used := 0
+	for start > 0 {
+		size := len(messages[start-1].Content)
+		if start < len(messages) && used+size > limit {
+			break
+		}
+		used += size
+		start--
+	}
+	if start == 0 {
+		return messages
+	}
+	bounded := make([]Message, 0, len(messages)-start+1)
+	bounded = append(bounded, Message{Role: RoleNotice, Content: NoticeHistoryOmitted, Status: StatusComplete})
+	bounded = append(bounded, messages[start:]...)
+	return bounded
 }

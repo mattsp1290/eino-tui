@@ -61,6 +61,8 @@ type service struct {
 	shutdownErr      error
 	pumpHook         func(string)
 	startHook        func(string)
+	waitingHook      func(string)
+	shutdownHook     func(string)
 	historyLoader    func(context.Context, session.Store, session.ID) ([]Message, error)
 }
 
@@ -115,6 +117,9 @@ func (s *service) Load(ctx context.Context) (Snapshot, error) {
 }
 
 func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ActionResult{}, err
+	}
 	normalized, err := textsafe.Prompt(prompt)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("%w", ErrInvalidPrompt)
@@ -130,6 +135,8 @@ func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error
 	}
 	s.state = stateStarting
 	runCtx, runCancel := context.WithCancel(s.ctx)
+	stopCallerCancel := context.AfterFunc(ctx, runCancel)
+	defer stopCallerCancel()
 	s.pendingCancel = runCancel
 	s.pending.Add(1)
 	s.mu.Unlock()
@@ -181,11 +188,11 @@ func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error
 		}
 		return ActionResult{}, fmt.Errorf("%w", ErrUnavailable)
 	}
-	return s.publishAdmitted(ctx, handle, events, runCancel, tailCancel, normalized)
+	return s.publishAdmitted(runCtx, handle, events, runCancel, tailCancel, normalized)
 }
 
 func (s *service) publishAdmitted(ctx context.Context, handle agentruntime.Handle, events <-chan session.EventRecord, runCancel, tailCancel context.CancelFunc, prompt string) (ActionResult, error) {
-	s.waitForRunReady(handle.RunID())
+	s.waitForRunReady(ctx, handle.RunID())
 	messages, err := s.projectHistory(ctx)
 	resync := err != nil
 	if resync {
@@ -196,7 +203,7 @@ func (s *service) publishAdmitted(ctx context.Context, handle agentruntime.Handl
 	active := &activeRun{run: run, handle: handle, cancelRun: runCancel, cancelTail: tailCancel, interrupt: make(chan string, 1)}
 	s.mu.Lock()
 	closing := s.state >= stateClosing
-	interruptRequested := s.pendingInterrupt
+	interruptRequested := s.pendingInterrupt || ctx.Err() != nil
 	s.pendingCancel = nil
 	s.pendingInterrupt = false
 	s.pendingAdmission = false
@@ -216,18 +223,20 @@ func (s *service) publishAdmitted(ctx context.Context, handle agentruntime.Handl
 	return ActionResult{Kind: ActionStarted, Run: run, Snapshot: initial}, nil
 }
 
-func (s *service) waitForRunReady(runID session.RunID) {
-	deadline := time.NewTimer(time.Second)
-	defer deadline.Stop()
+func (s *service) waitForRunReady(ctx context.Context, runID session.RunID) {
+	deadline, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
-		durable, err := s.store.GetRun(context.Background(), runID)
+		lookupCtx, lookupCancel := context.WithTimeout(deadline, 100*time.Millisecond)
+		durable, err := s.store.GetRun(lookupCtx, runID)
+		lookupCancel()
 		if err == nil && durable.Status != session.RunPending {
 			return
 		}
 		select {
-		case <-deadline.C:
+		case <-deadline.Done():
 			return
 		case <-ticker.C:
 		}
@@ -252,7 +261,17 @@ func (s *service) toWaiting(ctx context.Context) (ActionResult, error) {
 		return ActionResult{}, fmt.Errorf("%w", ErrUnavailable)
 	}
 	messages, _ := s.projectHistory(ctx)
+	if s.waitingHook != nil {
+		s.waitingHook("before-publish")
+	}
 	s.mu.Lock()
+	if s.state >= stateClosing {
+		s.pendingCancel = nil
+		s.pendingInterrupt = false
+		s.pendingAdmission = false
+		s.mu.Unlock()
+		return ActionResult{}, ErrClosing
+	}
 	s.pendingCancel = nil
 	s.pendingInterrupt = false
 	s.pendingAdmission = false
@@ -264,6 +283,9 @@ func (s *service) toWaiting(ctx context.Context) (ActionResult, error) {
 }
 
 func (s *service) Recover(ctx context.Context) (ActionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ActionResult{}, err
+	}
 	s.mu.Lock()
 	if s.state >= stateClosing {
 		s.mu.Unlock()
@@ -275,13 +297,24 @@ func (s *service) Recover(ctx context.Context) (ActionResult, error) {
 	}
 	target := s.recoveryRun
 	s.state = stateRecovering
+	runCtx, runCancel := context.WithCancel(s.ctx)
+	stopCallerCancel := context.AfterFunc(ctx, runCancel)
+	defer stopCallerCancel()
+	s.pendingCancel = runCancel
 	s.pending.Add(1)
 	s.mu.Unlock()
 	defer s.pending.Done()
-	current, activeErr := s.store.ActiveRun(ctx, s.sessionID)
+	current, activeErr := s.store.ActiveRun(runCtx, s.sessionID)
+	if activeErr == nil && !current.Terminal() {
+		target = current
+	}
 	if activeErr == nil && !current.Terminal() && time.Now().Before(current.LeaseUntil) {
-		messages, _ := s.projectHistory(ctx)
+		messages, _ := s.projectHistory(runCtx)
+		runCancel()
 		s.mu.Lock()
+		s.pendingCancel = nil
+		s.pendingInterrupt = false
+		s.pendingAdmission = false
 		if s.state == stateRecovering {
 			s.state = stateWaiting
 			s.recoveryRun = current
@@ -291,16 +324,22 @@ func (s *service) Recover(ctx context.Context) (ActionResult, error) {
 		return ActionResult{Kind: ActionRecoveryWaiting, Snapshot: snapshot}, nil
 	}
 	if activeErr != nil && !errors.Is(activeErr, session.ErrNotFound) {
+		runCancel()
 		s.resetPending()
+		if errors.Is(activeErr, context.Canceled) {
+			return ActionResult{}, context.Canceled
+		}
 		return ActionResult{}, fmt.Errorf("%w", ErrUnavailable)
 	}
 	s.mu.Lock()
 	if s.state >= stateClosing {
+		s.pendingCancel = nil
+		s.pendingInterrupt = false
+		s.pendingAdmission = false
 		s.mu.Unlock()
+		runCancel()
 		return ActionResult{}, ErrClosing
 	}
-	runCtx, runCancel := context.WithCancel(s.ctx)
-	s.pendingCancel = runCancel
 	s.pendingAdmission = true
 	s.mu.Unlock()
 	tailCtx, tailCancel := context.WithCancel(s.ctx)
@@ -321,9 +360,12 @@ func (s *service) Recover(ctx context.Context) (ActionResult, error) {
 		tailCancel()
 		runCancel()
 		s.resetPending()
+		if errors.Is(err, context.Canceled) {
+			return ActionResult{}, context.Canceled
+		}
 		return ActionResult{}, fmt.Errorf("%w", ErrUnavailable)
 	}
-	return s.publishAdmitted(ctx, handle, events, runCancel, tailCancel, "")
+	return s.publishAdmitted(runCtx, handle, events, runCancel, tailCancel, "")
 }
 
 func (s *service) pump(active *activeRun, events <-chan session.EventRecord, initial Snapshot) {
@@ -479,14 +521,19 @@ func (s *service) clearActive(active *activeRun) {
 }
 
 func (s *service) InterruptActive(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.state >= stateClosing {
 		s.mu.Unlock()
 		return ErrClosing
 	}
-	if s.pendingCancel != nil {
+	pendingCancel := s.pendingCancel
+	if pendingCancel != nil {
 		s.pendingInterrupt = true
 		s.mu.Unlock()
+		pendingCancel()
 		return nil
 	}
 	active := s.active
@@ -517,6 +564,12 @@ func (s *service) shutdown() {
 		s.pendingInterrupt = true
 	}
 	s.mu.Unlock()
+	if s.shutdownHook != nil {
+		s.shutdownHook("closing")
+	}
+	if pendingCancel != nil {
+		pendingCancel()
+	}
 	s.pending.Wait()
 	s.mu.Lock()
 	active := s.active

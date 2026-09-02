@@ -99,3 +99,21 @@ func TestHistoryProjectionPagesAndExcludesReasoningAndState(t *testing.T) {
 		}
 	}
 }
+
+func TestRetainNewestWithinBudgetMarksOmittedHistory(t *testing.T) {
+	messages := []Message{
+		{ID: "one", Role: RoleUser, Content: "1111"},
+		{ID: "two", Role: RoleAssistant, Content: "2222"},
+		{ID: "three", Role: RoleUser, Content: "3333"},
+	}
+	bounded := retainNewestWithinBudget(messages, 8)
+	if len(bounded) != 3 || bounded[0].Role != RoleNotice || bounded[0].Content != NoticeHistoryOmitted {
+		t.Fatalf("bounded=%#v", bounded)
+	}
+	if bounded[1].ID != "two" || bounded[2].ID != "three" {
+		t.Fatalf("newest messages not retained: %#v", bounded)
+	}
+	if got := retainNewestWithinBudget(messages, 12); len(got) != len(messages) || got[0].ID != "one" {
+		t.Fatalf("unexpected truncation: %#v", got)
+	}
+}

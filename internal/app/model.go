@@ -14,17 +14,20 @@ import (
 )
 
 type Model struct {
-	ctx           context.Context
-	service       runtimeui.Service
-	textarea      textarea.Model
-	viewport      viewport.Model
-	snapshot      runtimeui.Snapshot
-	phase         runtimeui.Phase
-	pending       runtimeui.Run
-	lastVersion   uint64
-	width         int
-	height        int
-	draftStarting string
+	ctx              context.Context
+	service          runtimeui.Service
+	textarea         textarea.Model
+	viewport         viewport.Model
+	snapshot         runtimeui.Snapshot
+	phase            runtimeui.Phase
+	pending          runtimeui.Run
+	lastVersion      uint64
+	width            int
+	height           int
+	draftStarting    string
+	stableWidth      int
+	stableMessages   []runtimeui.Message
+	stableTranscript string
 }
 
 func New(ctx context.Context, service runtimeui.Service) *Model {

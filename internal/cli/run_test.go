@@ -70,6 +70,35 @@ func TestRunApplicationFactoryPanicIsRedactedAndClosesService(t *testing.T) {
 	}
 }
 
+func TestRunLifecyclePanicsAreRedacted(t *testing.T) {
+	for _, stage := range []string{"prepare state", "open service", "close service"} {
+		t.Run(stage, func(t *testing.T) {
+			service := &testService{}
+			deps := testDeps(t, service, &testProgram{})
+			switch stage {
+			case "prepare state":
+				deps.PrepareState = func(context.Context, string) (platform.Paths, error) {
+					panic("secret /tmp/prepare")
+				}
+			case "open service":
+				deps.OpenService = func(context.Context, string, session.ID, string) (runtimeui.Service, error) {
+					panic("secret /tmp/open")
+				}
+			case "close service":
+				service.close = func(context.Context) error { panic("secret /tmp/close") }
+			}
+			var stderr bytes.Buffer
+			code := Run(context.Background(), nil, strings.NewReader(""), io.Discard, &stderr, deps)
+			if code != ExitFatal || !strings.Contains(stderr.String(), app.FatalDiagnostic) {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "/tmp/") {
+				t.Fatalf("panic leaked: %q", stderr.String())
+			}
+		})
+	}
+}
+
 func testDeps(t *testing.T, service runtimeui.Service, program *testProgram) Dependencies {
 	t.Helper()
 	root := t.TempDir()

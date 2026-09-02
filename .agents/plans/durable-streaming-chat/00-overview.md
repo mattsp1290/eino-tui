@@ -1,6 +1,6 @@
 # Durable Streaming Chat
 
-Status: Ready for implementation. Planning is complete; implementation has not occurred.
+Status: Implemented on `feat/durable-streaming-chat`; verification and review follow-ups are tracked separately.
 
 ## Application context
 

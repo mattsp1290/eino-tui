@@ -15,6 +15,7 @@ type Phase string
 const (
 	RoleUser             Role   = "user"
 	RoleAssistant        Role   = "assistant"
+	RoleNotice           Role   = "notice"
 	StatusComplete       Status = "complete"
 	StatusInterrupted    Status = "interrupted"
 	StatusFailed         Status = "failed"
@@ -85,4 +86,5 @@ const (
 	NoticeInterrupted     = "Response interrupted."
 	NoticeFailed          = "The demo response failed."
 	NoticeUnavailable     = "Conversation history is temporarily unavailable."
+	NoticeHistoryOmitted  = "Older durable messages are omitted from this view."
 )

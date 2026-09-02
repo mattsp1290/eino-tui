@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,25 +14,37 @@ func (m *Model) refreshTranscript() {
 		width = 1
 	}
 	wrap := transcriptStyle(width)
-	var sections []string
-	for _, message := range m.snapshot.Messages {
-		label := "You"
-		if message.Role == runtimeui.RoleAssistant {
-			label = "Demo"
+	if m.stableWidth != width || !slices.Equal(m.stableMessages, m.snapshot.Messages) {
+		var stableSections []string
+		for _, message := range m.snapshot.Messages {
+			body := message.Content
+			if message.Role != runtimeui.RoleNotice {
+				label := "You"
+				if message.Role == runtimeui.RoleAssistant {
+					label = "Demo"
+				}
+				body = label + ":\n" + message.Content
+			}
+			if message.Status == runtimeui.StatusInterrupted {
+				body += "\n[interrupted]"
+			}
+			if message.Status == runtimeui.StatusFailed {
+				body += "\n[failed]"
+			}
+			stableSections = append(stableSections, wrap.Render(body))
 		}
-		body := label + ":\n" + message.Content
-		if message.Status == runtimeui.StatusInterrupted {
-			body += "\n[interrupted]"
-		}
-		if message.Status == runtimeui.StatusFailed {
-			body += "\n[failed]"
-		}
-		sections = append(sections, wrap.Render(body))
+		m.stableTranscript = strings.Join(stableSections, "\n\n")
+		m.stableMessages = slices.Clone(m.snapshot.Messages)
+		m.stableWidth = width
 	}
+	sections := m.stableTranscript
 	if m.snapshot.LiveAssistant != "" {
-		sections = append(sections, wrap.Render("Demo (streaming):\n"+m.snapshot.LiveAssistant))
+		if sections != "" {
+			sections += "\n\n"
+		}
+		sections += wrap.Render("Demo (streaming):\n" + m.snapshot.LiveAssistant)
 	}
-	m.viewport.SetContent(strings.Join(sections, "\n\n"))
+	m.viewport.SetContent(sections)
 	m.viewport.GotoBottom()
 }
 

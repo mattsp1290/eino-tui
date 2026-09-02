@@ -30,7 +30,24 @@ const (
 	forcedDiagnostic  = "eino-tui forced shutdown; the unfinished turn will be recovered on next launch"
 )
 
-func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps Dependencies) int {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps Dependencies) (code int) {
+	var service runtimeui.Service
+	var program Program
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		if program != nil {
+			_ = program.ReleaseTerminal()
+		}
+		if service != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_, _ = closeService(service, cleanupCtx)
+			cancel()
+		}
+		fmt.Fprintln(stderr, app.FatalDiagnostic)
+		code = ExitFatal
+	}()
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help":
@@ -66,23 +83,29 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	appCtx, stop := signal.NotifyContext(ctx, platform.Signals()...)
 	defer stop()
-	service, err := deps.OpenService(appCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	service, err = deps.OpenService(appCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	program, fatal, constructionPanic := buildProgram(deps, appCtx, service, stop, stdin, stdout)
+	var fatal *app.Fatal
+	var constructionPanic bool
+	program, fatal, constructionPanic = buildProgram(deps, appCtx, service, stop, stdin, stdout)
 	if constructionPanic {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		_ = service.Close(cleanupCtx)
+		_, _ = closeService(service, cleanupCtx)
 		cancel()
 		fmt.Fprintln(stderr, app.FatalDiagnostic)
 		return ExitFatal
 	}
 	_, programErr, recovered := runProgram(program)
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	closeErr := service.Close(cleanupCtx)
+	closeErr, closePanic := closeService(service, cleanupCtx)
 	cancel()
+	if closePanic {
+		fmt.Fprintln(stderr, app.FatalDiagnostic)
+		return ExitFatal
+	}
 	if closeErr != nil {
 		fmt.Fprintln(stderr, forcedDiagnostic)
 		return ExitForcedShutdown
@@ -96,6 +119,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return ExitProgram
 	}
 	return ExitOK
+}
+
+func closeService(service runtimeui.Service, ctx context.Context) (err error, recovered bool) {
+	defer func() {
+		if recover() != nil {
+			err = nil
+			recovered = true
+		}
+	}()
+	return service.Close(ctx), false
 }
 
 func buildProgram(deps Dependencies, ctx context.Context, service runtimeui.Service, cancel context.CancelFunc, stdin io.Reader, stdout io.Writer) (program Program, fatal *app.Fatal, recovered bool) {

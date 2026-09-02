@@ -54,8 +54,9 @@ func TestServiceSlowConsumerCannotBlockSettlementOrClose(t *testing.T) {
 }
 
 type countingTail struct {
-	tail   *stream.Tail
-	active atomic.Int64
+	tail    *stream.Tail
+	active  atomic.Int64
+	drained chan struct{}
 }
 
 func (t *countingTail) Subscribe(ctx context.Context, id session.ID) (<-chan session.EventRecord, error) {
@@ -64,7 +65,11 @@ func (t *countingTail) Subscribe(ctx context.Context, id session.ID) (<-chan ses
 		return nil, err
 	}
 	t.active.Add(1)
-	go func() { <-ctx.Done(); t.active.Add(-1) }()
+	go func() {
+		<-ctx.Done()
+		t.active.Add(-1)
+		t.drained <- struct{}{}
+	}()
 	return events, nil
 }
 func (t *countingTail) Emit(ctx context.Context, event session.EventRecord) { t.tail.Emit(ctx, event) }
@@ -81,7 +86,7 @@ func TestSequentialTurnsCancelEveryTailSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tail := &countingTail{tail: stream.NewTail(64)}
+	tail := &countingTail{tail: stream.NewTail(64), drained: make(chan struct{}, 1)}
 	plans, err := composition.NewRegistry(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -99,9 +104,10 @@ func TestSequentialTurnsCancelEveryTailSubscription(t *testing.T) {
 			t.Fatal(err)
 		}
 		<-result.Run.Finished()
-		deadline := time.Now().Add(time.Second)
-		for tail.active.Load() != 0 && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
+		select {
+		case <-tail.drained:
+		case <-time.After(time.Second):
+			t.Fatal("tail subscription was not canceled")
 		}
 		if got := tail.active.Load(); got != 0 {
 			t.Fatalf("turn %d active subscribers=%d", index, got)
@@ -321,6 +327,180 @@ func TestPostAdmissionProjectionFailureStillReturnsAdmittedRunAndReconciles(t *t
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := chat.Close(deadline); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type orchestratorFunc struct {
+	start  func(context.Context, agentruntime.Request) (agentruntime.Handle, error)
+	resume func(context.Context, session.RunID) (agentruntime.Handle, error)
+}
+
+func (o orchestratorFunc) Start(ctx context.Context, request agentruntime.Request) (agentruntime.Handle, error) {
+	return o.start(ctx, request)
+}
+
+func (o orchestratorFunc) Resume(ctx context.Context, runID session.RunID) (agentruntime.Handle, error) {
+	return o.resume(ctx, runID)
+}
+
+func newOrchestratorTestService(t *testing.T, runtime orchestrator) *service {
+	t.Helper()
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "service.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newService(ctx, store, stream.NewTail(8), runtime, session.ID("service-test"), config.Snapshot{})
+}
+
+func TestPendingStartHonorsCallerInterruptAndCloseCancellation(t *testing.T) {
+	for _, control := range []string{"caller", "interrupt", "close"} {
+		t.Run(control, func(t *testing.T) {
+			entered := make(chan struct{})
+			runtime := orchestratorFunc{
+				start: func(ctx context.Context, _ agentruntime.Request) (agentruntime.Handle, error) {
+					close(entered)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+				resume: func(context.Context, session.RunID) (agentruntime.Handle, error) {
+					return nil, errors.New("unexpected resume")
+				},
+			}
+			chat := newOrchestratorTestService(t, runtime)
+			callCtx, cancelCall := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() { _, err := chat.Start(callCtx, "blocked"); result <- err }()
+			<-entered
+			switch control {
+			case "caller":
+				cancelCall()
+			case "interrupt":
+				if err := chat.InterruptActive(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			case "close":
+				closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := chat.Close(closeCtx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := <-result; !errors.Is(err, context.Canceled) {
+				t.Fatalf("start error=%v", err)
+			}
+			cancelCall()
+			if control != "close" {
+				closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := chat.Close(closeCtx); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestCloseCancelsPendingRecover(t *testing.T) {
+	entered := make(chan struct{})
+	runtime := orchestratorFunc{
+		start: func(context.Context, agentruntime.Request) (agentruntime.Handle, error) {
+			return nil, errors.New("unexpected start")
+		},
+		resume: func(ctx context.Context, _ session.RunID) (agentruntime.Handle, error) {
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	chat := newOrchestratorTestService(t, runtime)
+	chat.state = stateWaiting
+	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.sessionID, Status: session.RunRunning}
+	result := make(chan error, 1)
+	go func() { _, err := chat.Recover(context.Background()); result <- err }()
+	<-entered
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := chat.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("recover error=%v", err)
+	}
+}
+
+func TestRecoverResumesCurrentExpiredRun(t *testing.T) {
+	resumed := make(chan session.RunID, 1)
+	runtime := orchestratorFunc{
+		start: func(context.Context, agentruntime.Request) (agentruntime.Handle, error) {
+			return nil, errors.New("unexpected start")
+		},
+		resume: func(_ context.Context, id session.RunID) (agentruntime.Handle, error) {
+			resumed <- id
+			return nil, context.Canceled
+		},
+	}
+	chat := newOrchestratorTestService(t, runtime)
+	now := time.Now().UTC()
+	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.sessionID, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "current-run", SessionID: chat.sessionID, OwnerID: "owner", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(current.LeaseUntil) {
+		time.Sleep(time.Microsecond)
+	}
+	chat.state = stateWaiting
+	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.sessionID, Status: session.RunInterrupted}
+	if _, err := chat.Recover(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("recover error=%v", err)
+	}
+	if got := <-resumed; got != current.ID {
+		t.Fatalf("resumed %q, want %q", got, current.ID)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := chat.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContentionCannotPublishWaitingAfterCloseStarts(t *testing.T) {
+	runtime := orchestratorFunc{
+		start: func(context.Context, agentruntime.Request) (agentruntime.Handle, error) {
+			return nil, session.ErrSessionBusy
+		},
+		resume: func(context.Context, session.RunID) (agentruntime.Handle, error) {
+			return nil, errors.New("unexpected resume")
+		},
+	}
+	chat := newOrchestratorTestService(t, runtime)
+	now := time.Now().UTC()
+	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.sessionID, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "other-run", SessionID: chat.sessionID, OwnerID: "other", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan struct{})
+	release := make(chan struct{})
+	closing := make(chan struct{})
+	chat.waitingHook = func(string) { close(waiting); <-release }
+	chat.shutdownHook = func(string) { close(closing) }
+	startResult := make(chan error, 1)
+	go func() { _, err := chat.Start(context.Background(), "contended"); startResult <- err }()
+	<-waiting
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- chat.Close(context.Background()) }()
+	<-closing
+	close(release)
+	if err := <-startResult; !errors.Is(err, ErrClosing) {
+		t.Fatalf("start error=%v", err)
+	}
+	if err := <-closeResult; err != nil {
 		t.Fatal(err)
 	}
 }
