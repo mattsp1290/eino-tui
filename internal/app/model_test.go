@@ -1,0 +1,205 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/mattsp1290/eino-agent/session"
+	"github.com/mattsp1290/eino-tui/internal/runtimeui"
+)
+
+type fakeService struct {
+	load          runtimeui.Snapshot
+	start         runtimeui.ActionResult
+	startErr      error
+	startedPrompt string
+	interrupts    int
+}
+
+func (s *fakeService) Load(context.Context) (runtimeui.Snapshot, error) { return s.load, nil }
+func (s *fakeService) Start(_ context.Context, prompt string) (runtimeui.ActionResult, error) {
+	s.startedPrompt = prompt
+	return s.start, s.startErr
+}
+func (s *fakeService) InterruptActive(context.Context) error                   { s.interrupts++; return nil }
+func (s *fakeService) Recover(context.Context) (runtimeui.ActionResult, error) { return s.start, nil }
+func (s *fakeService) Close(context.Context) error                             { return nil }
+
+type fakeRun struct {
+	id        session.RunID
+	snapshots []runtimeui.Snapshot
+	finished  chan struct{}
+}
+
+func newFakeRun(id session.RunID, snapshots ...runtimeui.Snapshot) *fakeRun {
+	ch := make(chan struct{})
+	close(ch)
+	return &fakeRun{id: id, snapshots: snapshots, finished: ch}
+}
+func (r *fakeRun) ID() session.RunID         { return r.id }
+func (r *fakeRun) Finished() <-chan struct{} { return r.finished }
+func (r *fakeRun) Next(context.Context) (runtimeui.Snapshot, bool) {
+	if len(r.snapshots) == 0 {
+		return runtimeui.Snapshot{}, false
+	}
+	s := r.snapshots[0]
+	r.snapshots = r.snapshots[1:]
+	return s, true
+}
+
+func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
+	run := newFakeRun("run-1", runtimeui.Snapshot{RunID: "run-1", Version: 2, LiveAssistant: "Demo ", Phase: runtimeui.PhaseRunning}, runtimeui.Snapshot{RunID: "run-1", Version: 3, Terminal: true, Phase: runtimeui.PhaseIdle, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}, {Role: runtimeui.RoleAssistant, Content: "Demo complete"}}})
+	service := &fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, start: runtimeui.ActionResult{Kind: runtimeui.ActionStarted, Run: run, Snapshot: runtimeui.Snapshot{RunID: "run-1", Version: 1, Phase: runtimeui.PhaseRunning, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}}}}}
+	model := New(context.Background(), service)
+	_, cmd := model.Update(model.Init()())
+	if cmd != nil {
+		t.Fatal("unexpected load command")
+	}
+	model.textarea.SetValue("hello\nworld")
+	_, startCmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if startCmd == nil || model.phase != runtimeui.PhaseStarting {
+		t.Fatal("submit did not start")
+	}
+	_, next := model.Update(startCmd())
+	if service.startedPrompt != "hello\nworld" || model.textarea.Value() != "" || next == nil {
+		t.Fatalf("start state: prompt=%q input=%q", service.startedPrompt, model.textarea.Value())
+	}
+	_, next = model.Update(next())
+	if model.snapshot.LiveAssistant != "Demo " || next == nil {
+		t.Fatalf("live = %#v", model.snapshot)
+	}
+	_, next = model.Update(next())
+	if model.phase != runtimeui.PhaseIdle || model.pending != nil || len(model.snapshot.Messages) != 2 {
+		t.Fatalf("terminal = %#v", model.snapshot)
+	}
+}
+
+func TestKeysPasteAndResize(t *testing.T) {
+	service := &fakeService{}
+	model := New(context.Background(), service)
+	model.Update(tea.WindowSizeMsg{Width: 1, Height: 1})
+	if model.viewport.Width() < 1 || model.viewport.Height() < 1 {
+		t.Fatal("negative dimensions")
+	}
+	model.Update(tea.PasteMsg{Content: "one\n\x1b[31mtwo"})
+	if got := model.textarea.Value(); got != "one\ntwo" {
+		t.Fatalf("paste = %q", got)
+	}
+	if keys := model.textarea.KeyMap.InsertNewline.Keys(); len(keys) != 1 || keys[0] != "alt+enter" {
+		t.Fatalf("newline keys = %#v", keys)
+	}
+	model.phase = runtimeui.PhaseRunning
+	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd == nil {
+		t.Fatal("escape did not interrupt")
+	}
+	cmd()
+	if service.interrupts != 1 {
+		t.Fatalf("interrupts = %d", service.interrupts)
+	}
+	_, cmd = model.Update(tea.KeyPressMsg{Code: 'd', Text: "d", Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("ctrl+d quit while running")
+	}
+}
+
+func TestViewIsSemanticAtNarrowWidth(t *testing.T) {
+	model := New(context.Background(), &fakeService{})
+	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "界é\tשלום"}, {Role: runtimeui.RoleAssistant, Content: strings.Repeat("x", 100)}}}
+	model.resize(8, 6)
+	view := model.View()
+	if !view.AltScreen || !strings.Contains(view.Content, "credential-free demo") {
+		t.Fatalf("view = %#v", view)
+	}
+}
+
+func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
+	model := New(context.Background(), &fakeService{})
+	run := newFakeRun("current")
+	model.pending = run
+	model.lastVersion = 5
+	model.phase = runtimeui.PhaseRunning
+	model.snapshot = runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "current"}
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "prior", Version: 99, LiveAssistant: "wrong"}, ok: true})
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "also wrong"}, ok: true})
+	if model.snapshot.LiveAssistant != "current" {
+		t.Fatalf("stale snapshot applied: %#v", model.snapshot)
+	}
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 6, Resync: true, LiveAssistant: "new"}, ok: true})
+	if model.snapshot.LiveAssistant != "new" || !model.snapshot.Resync {
+		t.Fatalf("new snapshot not applied: %#v", model.snapshot)
+	}
+}
+
+func TestRecoveryWaitingReplacesDeadlineAndRetainsDraft(t *testing.T) {
+	model := New(context.Background(), &fakeService{})
+	model.phase = runtimeui.PhaseRecoveryWaiting
+	model.textarea.SetValue("unsent")
+	_, recoverCommand := model.Update(recoveryDueMsg{})
+	if recoverCommand == nil || model.phase != runtimeui.PhaseRecovering {
+		t.Fatal("recovery was not scheduled")
+	}
+	refreshed := time.Now().Add(time.Minute)
+	waiting := runtimeui.ActionResult{Kind: runtimeui.ActionRecoveryWaiting, Snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseRecoveryWaiting, RecoveryAt: refreshed, Notice: runtimeui.NoticeRecoveryWaiting}}
+	_, timer := model.Update(recoveredMsg{result: waiting})
+	if timer == nil || !model.snapshot.RecoveryAt.Equal(refreshed) || model.textarea.Value() != "unsent" {
+		t.Fatalf("waiting state=%#v draft=%q", model.snapshot, model.textarea.Value())
+	}
+}
+
+type panicModel struct{ where string }
+
+func (p panicModel) Init() tea.Cmd {
+	if p.where == "init" {
+		panic("secret /tmp/path")
+	}
+	if p.where == "cmd" {
+		return func() tea.Msg { panic("secret") }
+	}
+	return nil
+}
+func (p panicModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	if p.where == "update" {
+		panic("secret")
+	}
+	return p, nil
+}
+func (p panicModel) View() tea.View {
+	if p.where == "view" {
+		panic("secret")
+	}
+	return tea.NewView("ok")
+}
+
+func TestSafeModelRedactsPanics(t *testing.T) {
+	for _, where := range []string{"init", "update", "view", "cmd"} {
+		t.Run(where, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			wrapped, fatal := Safe(panicModel{where: where}, cancel)
+			safe := wrapped.(*safeModel)
+			switch where {
+			case "init":
+				safe.Init()
+			case "update":
+				safe.Update(struct{}{})
+			case "view":
+				v := safe.View()
+				if strings.Contains(v.Content, "secret") {
+					t.Fatal("panic leaked")
+				}
+			case "cmd":
+				safe.Init()()
+			}
+			if !fatal.Marked() {
+				t.Fatal("fatal not marked")
+			}
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatal("context not canceled")
+			}
+		})
+	}
+}

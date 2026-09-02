@@ -1,0 +1,61 @@
+package app
+
+import (
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/mattsp1290/eino-tui/internal/runtimeui"
+)
+
+func (m *Model) refreshTranscript() {
+	width := m.viewport.Width()
+	if width < 1 {
+		width = 1
+	}
+	wrap := transcriptStyle(width)
+	var sections []string
+	for _, message := range m.snapshot.Messages {
+		label := "You"
+		if message.Role == runtimeui.RoleAssistant {
+			label = "Demo"
+		}
+		body := label + ":\n" + message.Content
+		if message.Status == runtimeui.StatusInterrupted {
+			body += "\n[interrupted]"
+		}
+		if message.Status == runtimeui.StatusFailed {
+			body += "\n[failed]"
+		}
+		sections = append(sections, wrap.Render(body))
+	}
+	if m.snapshot.LiveAssistant != "" {
+		sections = append(sections, wrap.Render("Demo (streaming):\n"+m.snapshot.LiveAssistant))
+	}
+	m.viewport.SetContent(strings.Join(sections, "\n\n"))
+	m.viewport.GotoBottom()
+}
+
+func (m *Model) View() tea.View {
+	header := headerStyle.Render("eino-tui · credential-free demo")
+	notice := m.snapshot.Notice
+	if notice == "" {
+		notice = phaseText(m.phase)
+	}
+	content := header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\nEnter send · Alt+Enter newline · Esc interrupt · Ctrl+C quit"
+	view := tea.NewView(content)
+	view.AltScreen = true
+	return view
+}
+
+func phaseText(phase runtimeui.Phase) string {
+	switch phase {
+	case runtimeui.PhaseStarting:
+		return "Starting demo response…"
+	case runtimeui.PhaseRunning:
+		return "Streaming scripted demo response…"
+	case runtimeui.PhaseRecoveryWaiting, runtimeui.PhaseRecovering:
+		return runtimeui.NoticeRecoveryWaiting
+	default:
+		return "Local scripted output; no network model call."
+	}
+}
