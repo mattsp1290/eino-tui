@@ -21,9 +21,9 @@ check-mod:
 	@replacements="$$(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all)" && test -z "$$replacements"
 	@deps="$$(go list -deps ./cmd/eino-tui)" && case "$$deps" in *github.com/mattsp1290/eino-tui/internal/demomodel*|*github.com/mattsp1290/eino-tui/internal/pty*) exit 1;; esac
 	@test "$$(go list -m -f '{{.GoVersion}}')" = "1.26.3"
-	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.3.1"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.3.2"
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/codex-auth-go)" = "v0.3.0"
-	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-providers)" = "v0.0.0-20260606014731-3e0069d028bc"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-providers)" = "v0.0.0-20260903160254-f62b0132ac2b"
 	@test "$$(go list -m -f '{{.Version}}' github.com/cloudwego/eino)" = "v0.8.13"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbletea/v2)" = "v2.0.9"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbles/v2)" = "v2.2.1"

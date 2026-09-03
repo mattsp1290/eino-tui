@@ -26,7 +26,7 @@ Authorize this application using the device flow, then launch it from the worksp
 ./eino-tui
 ```
 
-Device login is the only supported login flow. `status` reads local credential state without refreshing or contacting the service. The only possible status text is `logged in`, `logged in; refresh required on next request`, or `not logged in`.
+Device login is the only supported login flow. `status` reads local credential state without refreshing or contacting the service. On a successful read, its only possible status text is `logged in`, `logged in; refresh required on next request`, or `not logged in`. A credential-read failure prints the fixed authentication diagnostic to standard error and exits with status 6.
 
 The default model is `gpt-5.5`. Choose another canonical Codex-admitted model for one process with:
 

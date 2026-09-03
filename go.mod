@@ -11,8 +11,8 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/mattsp1290/codex-auth-go v0.3.0
-	github.com/mattsp1290/eino-agent v0.3.1
-	github.com/mattsp1290/eino-providers v0.0.0-20260606014731-3e0069d028bc
+	github.com/mattsp1290/eino-agent v0.3.2
+	github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b
 )
 
 require (

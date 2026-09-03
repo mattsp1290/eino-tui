@@ -2,7 +2,7 @@
 
 ## Starting point
 
-The upstream durability gate is resolved by public `eino-agent v0.3.1`. Open `01-dependency-auth-and-cli.md` and execute the work packages in numeric order. Before editing, confirm:
+The upstream durability gate is resolved by public `eino-agent v0.3.2`. Open `01-dependency-auth-and-cli.md` and execute the work packages in numeric order. Before editing, confirm:
 
 ```sh
 git status --short
@@ -15,7 +15,7 @@ Preserve unrelated changes. Do not modify `~/git/eino-providers`, `~/git/eino-ag
 ## Dependency-ordered execution
 
 1. **Dependency, auth, and CLI foundation**
-   - Pin `eino-agent v0.3.1` and `codex-auth-go v0.3.0`; add `internal/codexmodel/config.go`, device-only subscription management, and the pure typed parser.
+   - Pin `eino-agent v0.3.2` and `codex-auth-go v0.3.0`; add `internal/codexmodel/config.go`, device-only subscription management, and the pure typed parser.
    - Prove full-string/bounded model admission, explicit discard logger use, credential isolation, and component behavior without changing production dispatch.
    - Leave `ProductionDependencies` and `run.go` behavior untouched so authenticated chat cannot reach the demo.
 2. **Codex runtime integration**
@@ -35,7 +35,7 @@ The packages are sequential. Tests land with their owning code; do not split aut
 ## Non-negotiable invariants
 
 - Production constructs transport only through `codex-auth-go.Client.HTTPClient` and passes it to `openaicodex.NewChatModelWithHTTPClient`.
-- Production wraps the Codex model only with the exact `NewEinoJSONExtraStateCodec` contract and `NewEinoStreamerWithProviderState` from `eino-agent v0.3.1`.
+- Production wraps the Codex model only with the exact `NewEinoJSONExtraStateCodec` contract and `NewEinoStreamerWithProviderState` from `eino-agent v0.3.2`.
 - Device login, status, authenticated transport, and provider construction use app name `eino-tui` and the same app-owned store.
 - Production exposes neither browser login nor logout, sets no auth endpoint/path overrides, uses no default logger, and never reads the official Codex CLI cache.
 - No test reads, refreshes, revokes, deletes, or writes the developer's credentials; direct production-binary PTY tests are limited to no-auth command paths.

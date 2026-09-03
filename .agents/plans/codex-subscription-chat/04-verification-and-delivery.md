@@ -16,7 +16,7 @@ Prove the complete subscription-backed journey at repository, provider-contract,
 ### `internal/integration/chat_test.go` and provider integration fixtures (existing)
 
 - Retain deterministic fake-resolver tests for runtime concurrency/durability behavior.
-- Add or call the Work Package 2 provider-contract fixture so integration coverage includes the pinned `openaicodex` request/SSE decoder and the v0.3.1 state-aware `eino-agent` boundary.
+- Add or call the Work Package 2 provider-contract fixture so integration coverage includes the pinned `openaicodex` request/SSE decoder and the v0.3.2 state-aware `eino-agent` boundary.
 - Use scripted/injected provider HTTP for the real-provider tests and injected auth seams for CLI tests. Never reproduce private credential JSON, redirect a real bearer token, use the default auth path, or invoke interactive login.
 - Prove two successful turns across a real SQLite close/reopen restore exact ordered reasoning items privately. Separately prove a provider error after admission leaves one failed user message, omits an empty assistant row, permits a subsequent turn, and replays the same result after reopen.
 - Prove v1 and v2 IDs differ and the new production path sees only v2 history.
@@ -44,7 +44,7 @@ Prove the complete subscription-backed journey at repository, provider-contract,
 
 ### `Makefile` and `.github/workflows/ci.yml` (existing)
 
-- Add exact checks for `eino-agent v0.3.1`, the provider pseudo-version, and `codex-auth-go v0.3.0`.
+- Add exact checks for `eino-agent v0.3.2`, the provider pseudo-version, and `codex-auth-go v0.3.0`.
 - Include `internal/subscription` and `internal/codexmodel` in unit/race targets.
 - Run the real-provider hermetic contract test on both OSes.
 - Keep CI credential-free and network-independent after module download. Do not add OAuth secrets or a live Codex test to pull requests.
@@ -84,7 +84,7 @@ Inspect any generated diff rather than discarding unrelated work. CI must pass o
 
 - All credential-free automated gates pass on both supported operating systems.
 - The manual live journey passes on at least one supported operating system with an eligible subscription.
-- Production imports the pinned provider and state-aware v0.3.1 adapter, and no demo resolver, sibling path, test endpoint, credential fixture, browser-login path, or logout path.
+- Production imports the pinned provider and state-aware v0.3.2 adapter, and no demo resolver, sibling path, test endpoint, credential fixture, browser-login path, or logout path.
 - Documentation accurately distinguishes remote prompts/responses, local durable history, and app-owned OAuth credentials.
 
 ## Risks and exclusions

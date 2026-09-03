@@ -200,12 +200,12 @@ github.com/mattn/go-runewidth v0.0.27 h1:Feg/Oou5zI/wnpgDF6omIU0OokC9GxLC/WRknhV
 github.com/mattn/go-runewidth v0.0.27/go.mod h1:3qAiGCV4Koz/yuveO58qUefmUTRm8r0IGEXZ9jeHp/8=
 github.com/mattsp1290/codex-auth-go v0.3.0 h1:jxlV85RGwzHlSHh7MgQNJbgHF+f1P4JquGTcIm5Nm0I=
 github.com/mattsp1290/codex-auth-go v0.3.0/go.mod h1:FLMdyGBZmgown6AFrEOlThVCM86f8RiI4JKSFo56fAM=
-github.com/mattsp1290/eino-agent v0.3.1 h1:4P4S/edGsK0YdbD6CS/HDLdtu4PZrxKbYX1jsjYZSVs=
-github.com/mattsp1290/eino-agent v0.3.1/go.mod h1:v009gVJOkx5e9ngO3f7DeFLg8j3U2nv1QccFfd7j3E0=
+github.com/mattsp1290/eino-agent v0.3.2 h1:Ft+4u+laudxPVjKMFeYlpeaHVWlTpx5iD1dxvcYdQfs=
+github.com/mattsp1290/eino-agent v0.3.2/go.mod h1:v009gVJOkx5e9ngO3f7DeFLg8j3U2nv1QccFfd7j3E0=
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b h1:Wk0c8Baxm8DgT3B7iWPaOP1k2QKAoc20Wv6dEvebepc=
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b/go.mod h1:h2idE8ypJFzcq4eOKOXGPrx56UyhI+UwKkFUyN4L0o8=
-github.com/mattsp1290/eino-providers v0.0.0-20260606014731-3e0069d028bc h1:Y8Wq2nap0GtN1XQcDhgwKDB41Px6uiRo4x7KfyqMYDc=
-github.com/mattsp1290/eino-providers v0.0.0-20260606014731-3e0069d028bc/go.mod h1:JvHV8R+KBkA1iZYHTM4Byatnqe6GBvKpIN+25fn6rnA=
+github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b h1:/Xe9+L0MR95+6XgZXuVzOR+52u4AMThaXatpV3Kg/1I=
+github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b/go.mod h1:JvHV8R+KBkA1iZYHTM4Byatnqe6GBvKpIN+25fn6rnA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2 h1:iXombGGjqjBrmE9WaSidUhhi3YQhf42QTHvHLMkgvCA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2/go.mod h1:qs96ysDmxhE4BZoU45I43zcyfnaYxU3X+aRzLko/htY=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b h1:j7+1HpAFS1zy5+Q4qx1fWh90gTKwiN4QCGoY9TWyyO4=

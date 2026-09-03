@@ -331,6 +331,53 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 	}
 }
 
+func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T) {
+	const (
+		secretName = "SECRET_PROVIDER_TOOL_NAME"
+		secretArgs = "SECRET_PROVIDER_TOOL_ARGS"
+	)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		stream := strings.Join([]string{
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":""}}`,
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"value\":\"` + secretArgs + `\"}"}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":"{\"value\":\"` + secretArgs + `\"}"}}`,
+			`data: {"type":"response.completed","response":{"id":"response_tool"}}`,
+			"",
+		}, "\n\n")
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}, nil
+	})
+	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	started, err := service.Start(ctx, "do not execute provider tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := drainProviderRun(t, started.Run)
+	if terminal.Notice != runtimeui.NoticeProviderFailed || len(terminal.Messages) != 1 || terminal.Messages[0].Status != runtimeui.StatusFailed {
+		t.Fatalf("terminal = %#v", terminal)
+	}
+	closeRuntime(t, service)
+
+	db, err := sql.Open("sqlite", paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var toolCalls int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_calls`).Scan(&toolCalls); err != nil {
+		t.Fatal(err)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("provider-controlled response created %d durable tool calls", toolCalls)
+	}
+	assertDurableSecretsAbsent(t, paths.Database, secretName, secretArgs, "call_secret")
+}
+
 func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
 	ctx := context.Background()
 	workspace := t.TempDir()
@@ -461,12 +508,19 @@ func assertDurableSecretsAbsent(t *testing.T, database string, secrets ...string
 	for _, secret := range secrets {
 		var matches int
 		if err := db.QueryRow(`SELECT
+			(SELECT COUNT(*) FROM sessions WHERE instr(CAST(record AS TEXT), ?) > 0) +
 			(SELECT COUNT(*) FROM runs WHERE instr(CAST(record AS TEXT), ?) > 0) +
-			(SELECT COUNT(*) FROM events WHERE instr(CAST(record AS TEXT), ?) > 0)`, secret, secret).Scan(&matches); err != nil {
+			(SELECT COUNT(*) FROM messages WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM parts WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM events WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM tool_calls WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM context_epochs WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM model_requests WHERE instr(CAST(record AS TEXT), ?) > 0)`,
+			secret, secret, secret, secret, secret, secret, secret, secret).Scan(&matches); err != nil {
 			t.Fatal(err)
 		}
 		if matches != 0 {
-			t.Fatalf("durable run/event records retained forbidden marker %q", secret)
+			t.Fatalf("durable records retained forbidden marker %q", secret)
 		}
 	}
 }

@@ -19,7 +19,7 @@ This package deliberately does not connect the new commands to `ProductionDepend
 ### `go.mod`, `go.sum`, and `Makefile` (existing)
 
 - Pin these exact direct requirements:
-  - `github.com/mattsp1290/eino-agent v0.3.1`
+  - `github.com/mattsp1290/eino-agent v0.3.2`
   - `github.com/mattsp1290/codex-auth-go v0.3.0`
 - Defer the `eino-providers` direct requirement to Work Package 2, where production code imports it and `go mod tidy -diff` can retain it normally.
 - Keep Eino v0.8.13 aligned with the provider/agent graph unless normal module resolution proves a required public upgrade; record and review any resulting direct-version change.

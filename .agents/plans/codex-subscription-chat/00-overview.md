@@ -20,9 +20,9 @@ Implication: replace the credential-free demo as the production default without 
 
 ## Resolved upstream gate
 
-The durable provider-state request at `~/.agents/projects/eino-agent/requests/2026-09-02-durable-codex-provider-state.md` is resolved. Resolve `~` through the implementing user's home directory. The matching response defines the public codec and state-aware streamer contract. The superseding public release `github.com/mattsp1290/eino-agent@v0.3.1` was independently verified on 2026-09-02: the remote annotated tag peels to `03ed990be9724f05936e856e5c93fce61b268b83`, a fresh external consumer resolved it through the public Go proxy and checksum database without `replace`, the targeted SQLite-reopen/provider-state suite passed ten consecutive runs, and the race, vet, and full repository gates passed.
+The durable provider-state request at `~/.agents/projects/eino-agent/requests/2026-09-02-durable-codex-provider-state.md` is resolved. Resolve `~` through the implementing user's home directory. The matching response defines the public codec and state-aware streamer contract. The current public release `github.com/mattsp1290/eino-agent@v0.3.2` was verified on 2026-09-03: the remote annotated tag peels to `4ad8d2564e890c3bed2dd28be648a57d70b62350`, resolves through the public Go proxy and checksum database without `replace`, and passes the race, vet, lint, generation, Windows, and external-consumer gates.
 
-Implementation must pin v0.3.1 and use `model.NewEinoJSONExtraStateCodec` plus `model.NewEinoStreamerWithProviderState`; ordinary `model.NewEinoStreamer` is not sufficient for Codex reasoning continuity.
+Implementation must pin v0.3.2 and use `model.NewEinoJSONExtraStateCodec` plus `model.NewEinoStreamerWithProviderState`; ordinary `model.NewEinoStreamer` is not sufficient for Codex reasoning continuity.
 
 ## Requested outcome
 
@@ -48,7 +48,7 @@ Included:
 - One ChatGPT subscription-backed OpenAI Codex provider and one configured model.
 - Device login, local status, authenticated transport refresh, and fixed auth diagnostics.
 - Existing durable workspace replay, streaming, interrupt, crash recovery, display sanitization, terminal restoration, and macOS/Linux support.
-- Durable bounded encrypted-reasoning continuity through `eino-agent` v0.3.1.
+- Durable bounded encrypted-reasoning continuity through `eino-agent` v0.3.2.
 - Hermetic Responses SSE tests and an opt-in manual real-account smoke journey.
 
 Excluded:
@@ -65,8 +65,8 @@ Excluded:
 
 - Baseline: `eino-tui` `main` at `7732fd599ac6e8a7f99bd3472b65a23c950b6b0a`; `make check` passed before planning. The plan directory is the only planned local addition.
 - Production currently selects `internal/demomodel.Resolver` in `internal/runtimeui/wiring.go`; the service, SQLite projection, run pump, and Bubble Tea lifecycle below it are provider-neutral.
-- `github.com/mattsp1290/eino-agent v0.3.1` supplies durable provider-private state, strict capture/restore validation, atomic assistant/state persistence, SQLite reopen support, and redaction from ordinary history, AG-UI, and observability surfaces.
-- `github.com/mattsp1290/eino-providers` commit `3e0069d028bc946deaa96ea2dd6bff76b4118c38` resolves normally as `v0.0.0-20260606014731-3e0069d028bc`. Its public `openaicodex.NewChatModelWithHTTPClient` accepts an authenticated client, speaks the subscription Responses API, streams text, and preserves encrypted reasoning in Eino `Extra`. It has no semantic-version tag at that commit.
+- `github.com/mattsp1290/eino-agent v0.3.2` supplies durable provider-private state, strict capture/restore validation, atomic assistant/state persistence, SQLite reopen support, redaction from ordinary history, AG-UI, and observability surfaces, and fixed-value settlement for recovered provider panics.
+- `github.com/mattsp1290/eino-providers` commit `f62b0132ac2b9366255de1f2e4ee79e7c1d951b2` resolves normally as `v0.0.0-20260903160254-f62b0132ac2b`. Its public `openaicodex.NewChatModelWithHTTPClient` accepts an authenticated client, speaks the subscription Responses API, streams text, preserves encrypted reasoning in Eino `Extra`, and contains response-goroutine panics behind a fixed stream error. It has no semantic-version tag at that commit.
 - The local `eino-providers` checkout contains unrelated user changes. Implementation must not edit it and must not consume it with a local replacement.
 - `github.com/mattsp1290/codex-auth-go v0.3.0` exposes device login, local status, authenticated HTTP-client creation, app-specific storage, refresh, a device prompt callback, model admission, and plan/quota sentinels. Production will provide an explicit discard logger and will not use endpoint or credential-path overrides.
 - Official Codex authentication supports ChatGPT subscription access and treats cached credentials as secrets: [Codex authentication](https://learn.chatgpt.com/docs/auth).
@@ -138,7 +138,7 @@ Invalid arguments also return before signal ownership and any external side effe
 
 ## Risks and gates
 
-- **Dependency gate:** exact public pins (`eino-agent v0.3.1`, provider pseudo-version, auth v0.3.0) resolve from a clean module cache with no `replace`.
+- **Dependency gate:** exact public pins (`eino-agent v0.3.2`, provider pseudo-version, auth v0.3.0) resolve from a clean module cache with no `replace`.
 - **Protocol gate:** hermetic tests exercise real `openaicodex` request/SSE code and the state-aware `eino-agent` adapter, including two turns across SQLite close/reopen.
 - **Credential gate:** automated tests use injected clients/transports and dedicated temporary stores only. Production-binary PTY tests never start authenticated chat or inspect the developer's default credential path.
 - **Durability gate:** provider-state corruption or mismatch fails before dispatch; capture/persistence failure leaves no assistant parts; ordinary projections never expose state bytes.

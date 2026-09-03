@@ -2,21 +2,21 @@
 
 ## Goal and prerequisites
 
-Atomically connect the Work Package 1 CLI/auth foundation to the pinned Codex provider and v0.3.1 durable provider-state boundary, replacing the scripted production resolver while preserving run, SQLite, and terminal lifecycle contracts. Work Package 1 must have passed its gate.
+Atomically connect the Work Package 1 CLI/auth foundation to the pinned Codex provider and v0.3.2 durable provider-state boundary, replacing the scripted production resolver while preserving run, SQLite, and terminal lifecycle contracts. Work Package 1 must have passed its gate.
 
 ## Repository evidence
 
 - `internal/runtimeui/wiring.go` hard-codes `demomodel.Resolver`, demo selection, agent name, and system prompt; lower-level `open` already accepts a `model.Resolver`.
 - `runtimeui.Service.Start` submits only the new prompt; `eino-agent` loads durable history and owns admission.
-- The verified v0.3.1 consumer contract requires the state-aware Eino adapter for provider-private assistant continuation data.
+- The verified v0.3.2 consumer contract requires the state-aware Eino adapter for provider-private assistant continuation data.
 - The pinned provider emits encrypted reasoning items under Eino `Extra["openaicodex:reasoning_items"]`.
 
 ## Change surface
 
 ### `go.mod`, `go.sum`, and `Makefile` (existing)
 
-- Add the direct provider pin `github.com/mattsp1290/eino-providers v0.0.0-20260606014731-3e0069d028bc` now that production imports it.
-- Extend `check-mod` to assert the provider pin alongside `eino-agent v0.3.1` and auth v0.3.0. Keep `go mod tidy -diff` and the no-`replace` assertion.
+- Add the direct provider pin `github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b` now that production imports it.
+- Extend `check-mod` to assert the provider pin alongside `eino-agent v0.3.2` and auth v0.3.0. Keep `go mod tidy -diff` and the no-`replace` assertion.
 
 ### `internal/codexmodel/resolver.go` and `resolver_test.go` (new)
 
@@ -114,7 +114,7 @@ go list -deps ./cmd/eino-tui
 
 ## Exit gate
 
-The pinned real provider streams through the exact v0.3.1 state-aware contract; a two-turn SQLite close/reopen test proves private reasoning continuity and public redaction; production contains no demo resolver; and v2 workspace sessions preserve existing run/lifecycle guarantees.
+The pinned real provider streams through the exact v0.3.2 state-aware contract; a two-turn SQLite close/reopen test proves private reasoning continuity and public redaction; production contains no demo resolver; and v2 workspace sessions preserve existing run/lifecycle guarantees.
 
 ## Risks and exclusions
 
