@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/mattsp1290/eino-agent/composition"
@@ -15,20 +14,13 @@ import (
 	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-agent/stream"
 	"github.com/mattsp1290/eino-tui/internal/platform"
-	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
-
-type DisplayMetadata struct {
-	Provider string
-	Model    string
-}
 
 type Config struct {
 	Resolver     model.Resolver
 	Selection    model.Selection
 	AgentName    string
 	SystemPrompt string
-	Display      DisplayMetadata
 }
 
 // Open builds the in-process runtime around the protected SQLite database.
@@ -44,15 +36,12 @@ func OpenWithResolver(ctx context.Context, database string, sessionID session.ID
 	return Open(ctx, database, sessionID, workspace, Config{
 		Resolver: resolver, Selection: model.Selection{ProviderID: "demo", ModelID: "scripted-v1"},
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
-		Display: DisplayMetadata{Provider: "Codex", Model: "fixture"},
 	})
 }
 
 func validateConfig(cfg Config) error {
 	if cfg.Resolver == nil || cfg.Selection.ProviderID == "" || cfg.Selection.ModelID == "" || cfg.Selection.Variant != "" ||
-		cfg.AgentName == "" || cfg.SystemPrompt == "" || cfg.Display.Provider == "" || cfg.Display.Model == "" ||
-		len(cfg.Display.Provider) > 128 || len(cfg.Display.Model) > 256 || strings.ContainsAny(cfg.Display.Provider+cfg.Display.Model, "\n\t") ||
-		textsafe.Display(cfg.Display.Provider) != cfg.Display.Provider || textsafe.Display(cfg.Display.Model) != cfg.Display.Model {
+		cfg.AgentName == "" || cfg.SystemPrompt == "" {
 		return fmt.Errorf("build runtime: invalid configuration")
 	}
 	return nil

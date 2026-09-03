@@ -9,7 +9,7 @@ import (
 )
 
 func TestEnterBlankAndControlDContract(t *testing.T) {
-	model := New(context.Background(), &fakeService{})
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
 	model.textarea.SetValue(" \n")
 	_, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command != nil || model.snapshot.Phase != runtimeui.PhaseIdle {
@@ -33,7 +33,7 @@ func TestEnterBlankAndControlDContract(t *testing.T) {
 func TestAltEnterBuildsOneMultilineSubmission(t *testing.T) {
 	run := newFakeRun("run")
 	service := &fakeService{start: runtimeui.ActionResult{Kind: runtimeui.ActionStarted, Run: run, Snapshot: runtimeui.Snapshot{RunID: "run", Version: 1, Phase: runtimeui.PhaseRunning}}}
-	model := New(context.Background(), service)
+	model := New(context.Background(), service, testDisplayConfig())
 	model.textarea.SetValue("first")
 	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
 	model.Update(tea.PasteMsg{Content: "second"})

@@ -40,6 +40,10 @@ func newFakeRun(id session.RunID, snapshots ...runtimeui.Snapshot) *fakeRun {
 	close(ch)
 	return &fakeRun{id: id, snapshots: snapshots, finished: ch}
 }
+
+func testDisplayConfig() Config {
+	return Config{Provider: "Codex subscription", Model: "gpt-5.5"}
+}
 func (r *fakeRun) ID() session.RunID         { return r.id }
 func (r *fakeRun) Finished() <-chan struct{} { return r.finished }
 func (r *fakeRun) Next(context.Context) (runtimeui.Snapshot, bool) {
@@ -54,7 +58,7 @@ func (r *fakeRun) Next(context.Context) (runtimeui.Snapshot, bool) {
 func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 	run := newFakeRun("run-1", runtimeui.Snapshot{RunID: "run-1", Version: 2, LiveAssistant: "Demo ", Phase: runtimeui.PhaseRunning}, runtimeui.Snapshot{RunID: "run-1", Version: 3, Terminal: true, Phase: runtimeui.PhaseIdle, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}, {Role: runtimeui.RoleAssistant, Content: "Demo complete"}}})
 	service := &fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, start: runtimeui.ActionResult{Kind: runtimeui.ActionStarted, Run: run, Snapshot: runtimeui.Snapshot{RunID: "run-1", Version: 1, Phase: runtimeui.PhaseRunning, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}}}}}
-	model := New(context.Background(), service)
+	model := New(context.Background(), service, testDisplayConfig())
 	_, cmd := model.Update(model.Init()())
 	if cmd != nil {
 		t.Fatal("unexpected load command")
@@ -80,7 +84,7 @@ func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 
 func TestKeysPasteAndResize(t *testing.T) {
 	service := &fakeService{}
-	model := New(context.Background(), service)
+	model := New(context.Background(), service, testDisplayConfig())
 	model.Update(tea.WindowSizeMsg{Width: 1, Height: 1})
 	if model.viewport.Width() < 1 || model.viewport.Height() < 1 {
 		t.Fatal("negative dimensions")
@@ -108,7 +112,7 @@ func TestKeysPasteAndResize(t *testing.T) {
 }
 
 func TestViewIsSemanticAtNarrowWidth(t *testing.T) {
-	model := New(context.Background(), &fakeService{})
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "界é\tשלום"}, {Role: runtimeui.RoleAssistant, Content: strings.Repeat("x", 100)}}}
 	model.resize(8, 6)
 	view := model.View()
@@ -118,7 +122,7 @@ func TestViewIsSemanticAtNarrowWidth(t *testing.T) {
 }
 
 func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
-	model := New(context.Background(), &fakeService{})
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
 	run := newFakeRun("current")
 	model.pending = run
 	model.lastVersion = 5
@@ -136,7 +140,7 @@ func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
 }
 
 func TestRecoveryWaitingReplacesDeadlineAndRetainsDraft(t *testing.T) {
-	model := New(context.Background(), &fakeService{})
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
 	model.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 	model.textarea.SetValue("unsent")
 	_, recoverCommand := model.Update(recoveryDueMsg{})
@@ -165,7 +169,7 @@ func TestSnapshotPhaseDrivesKeysStatusAndEditing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.phase), func(t *testing.T) {
-			model := New(context.Background(), &fakeService{})
+			model := New(context.Background(), &fakeService{}, testDisplayConfig())
 			model.snapshot.Phase = tt.phase
 			model.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 			if got := model.textarea.Value() != ""; got != tt.editable {

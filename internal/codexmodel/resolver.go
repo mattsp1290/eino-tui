@@ -62,7 +62,7 @@ func newResolver(ctx context.Context, client *http.Client, modelID string, facto
 	if err != nil {
 		return nil, fmt.Errorf("construct Codex streamer: %w", err)
 	}
-	return &resolver{modelID: modelIDValue, streamer: streamer}, nil
+	return &resolver{modelID: modelIDValue, streamer: newSafeProviderStateStreamer(streamer)}, nil
 }
 
 func (r *resolver) Resolve(_ context.Context, selection agentmodel.Selection, _ agentmodel.Runtime) (agentmodel.Resolved, error) {

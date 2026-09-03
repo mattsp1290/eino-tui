@@ -18,8 +18,8 @@ build:
 check-mod:
 	go mod tidy -diff
 	go mod verify
-	@! go list -m -json all | rg -q '"Replace"'
-	@! go list -deps ./cmd/eino-tui | rg -q 'github.com/mattsp1290/eino-tui/internal/(demomodel|pty)'
+	@replacements="$$(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all)" && test -z "$$replacements"
+	@deps="$$(go list -deps ./cmd/eino-tui)" && case "$$deps" in *github.com/mattsp1290/eino-tui/internal/demomodel*|*github.com/mattsp1290/eino-tui/internal/pty*) exit 1;; esac
 	@test "$$(go list -m -f '{{.GoVersion}}')" = "1.26.3"
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.3.1"
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/codex-auth-go)" = "v0.3.0"

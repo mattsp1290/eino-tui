@@ -10,7 +10,7 @@ import (
 )
 
 func TestViewUsesOnlySanitizedPresentationState(t *testing.T) {
-	model := New(context.Background(), &fakeService{})
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
 	malicious := "safe\x1b]0;title\a\x1b[31m red\x1b[0m\u202e"
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleAssistant, Content: textsafe.Display(malicious)}}}
 	model.resize(40, 12)

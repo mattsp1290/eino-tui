@@ -163,6 +163,62 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	closeRuntime(t, reopened)
 }
 
+func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &recordingCodexTransport{}
+	client := &http.Client{Transport: transport}
+	sessionID := platform.WorkspaceSessionID(workspace)
+
+	first := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, codexmodel.DefaultModel)
+	started, err := first.Start(ctx, "seed cross-model state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = drainProviderRun(t, started.Run)
+	closeRuntime(t, first)
+
+	const nextModel = "gpt-5.6"
+	reopened := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, nextModel)
+	continued, err := reopened.Start(ctx, "continue with compatible model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := drainProviderRun(t, continued.Run)
+	if len(terminal.Messages) != 4 || transport.count() != 2 {
+		t.Fatalf("terminal=%#v dispatches=%d", terminal, transport.count())
+	}
+
+	request := transport.request(1)
+	var payload struct {
+		Model string            `json:"model"`
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(request, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var restored []string
+	for _, item := range payload.Input {
+		var kind struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(item, &kind); err != nil {
+			t.Fatal(err)
+		}
+		if kind.Type == "reasoning" {
+			restored = append(restored, string(item))
+		}
+	}
+	if payload.Model != nextModel || len(restored) != 2 || restored[0] != reasoningOne || restored[1] != reasoningTwo {
+		t.Fatalf("model=%q restored=%#v", payload.Model, restored)
+	}
+	closeRuntime(t, reopened)
+}
+
 func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 	ctx := context.Background()
 	workspace := t.TempDir()
@@ -198,6 +254,7 @@ func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 		t.Fatalf("retry terminal = %#v", recoveredTerminal)
 	}
 	closeRuntime(t, service)
+	assertDurableSecretsAbsent(t, paths.Database, "TOKEN", "/tmp/private", "prompt text", "leak")
 
 	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
 	replay, err := reopened.Load(ctx)
@@ -269,6 +326,7 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 				}
 			}
 			closeRuntime(t, service)
+			assertDurableSecretsAbsent(t, paths.Database, "TOKEN", "/tmp/private", "leak")
 		})
 	}
 }
@@ -373,20 +431,44 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 
 func openCodexFixture(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client) runtimeui.Service {
 	t.Helper()
-	resolver, err := codexmodel.NewResolver(ctx, client, codexmodel.DefaultModel)
+	return openCodexFixtureModel(t, ctx, database, sessionID, workspace, client, codexmodel.DefaultModel)
+}
+
+func openCodexFixtureModel(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client, modelID string) runtimeui.Service {
+	t.Helper()
+	resolver, err := codexmodel.NewResolver(ctx, client, modelID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := runtimeui.Open(ctx, database, sessionID, workspace, runtimeui.Config{
 		Resolver:  resolver,
-		Selection: model.Selection{ProviderID: codexmodel.ProviderID, ModelID: model.ID(codexmodel.DefaultModel)},
+		Selection: model.Selection{ProviderID: codexmodel.ProviderID, ModelID: model.ID(modelID)},
 		AgentName: "codex", SystemPrompt: "Be helpful and use no tools.",
-		Display: runtimeui.DisplayMetadata{Provider: "Codex subscription", Model: codexmodel.DefaultModel},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return service
+}
+
+func assertDurableSecretsAbsent(t *testing.T, database string, secrets ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, secret := range secrets {
+		var matches int
+		if err := db.QueryRow(`SELECT
+			(SELECT COUNT(*) FROM runs WHERE instr(CAST(record AS TEXT), ?) > 0) +
+			(SELECT COUNT(*) FROM events WHERE instr(CAST(record AS TEXT), ?) > 0)`, secret, secret).Scan(&matches); err != nil {
+			t.Fatal(err)
+		}
+		if matches != 0 {
+			t.Fatalf("durable run/event records retained forbidden marker %q", secret)
+		}
+	}
 }
 
 func drainProviderRun(t *testing.T, run runtimeui.Run) runtimeui.Snapshot {

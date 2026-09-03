@@ -91,7 +91,14 @@ func TestNewOwnsLoggerStoreAndDeviceOutput(t *testing.T) {
 	if got := output.String(); got != "Open https://auth.example/device and enter code: ABCD-1234\n" {
 		t.Fatalf("device output = %q", got)
 	}
-	for _, bad := range [][2]string{{"https://auth.example/\x1b]0;TOKEN\a", "ABCD"}, {"https://auth.example/device", "ABCD\nTOKEN"}, {"http://auth.example/device", "ABCD"}} {
+	for _, bad := range [][2]string{
+		{"https://auth.example/\x1b]0;TOKEN\a", "ABCD"},
+		{"https://auth.example/device", "ABCD\nTOKEN"},
+		{"http://auth.example/device", "ABCD"},
+		{"https://auth.example/device\u202eTOKEN", "ABCD"},
+		{"https://auth.example/device\u200dTOKEN", "ABCD"},
+		{string([]byte("https://auth.example/device\xff")), "ABCD"},
+	} {
 		before := output.String()
 		if err := options.DevicePrompt(bad[0], bad[1]); !errors.Is(err, ErrAuth) {
 			t.Fatalf("unsafe prompt accepted: %q %q", bad[0], bad[1])

@@ -15,6 +15,7 @@ import (
 
 	codexauth "github.com/mattsp1290/codex-auth-go"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
+	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
 type Status uint8
@@ -115,11 +116,11 @@ func (m *Manager) HTTPClient(ctx context.Context) (*http.Client, error) {
 }
 
 func validDeviceValue(value string, limit int) bool {
-	if value == "" || len(value) > limit || !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\t") {
+	if value == "" || len(value) > limit || !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\t") || textsafe.Display(value) != value {
 		return false
 	}
 	for _, r := range value {
-		if unicode.IsControl(r) || r == 0x7f {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || r == 0x7f {
 			return false
 		}
 	}

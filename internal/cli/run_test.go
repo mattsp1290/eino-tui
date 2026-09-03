@@ -388,7 +388,7 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want=%v", calls, want)
 	}
-	if captured.Selection.ProviderID != codexmodel.ProviderID || captured.Selection.ModelID != "gpt-5.6" || captured.AgentName != "codex" || captured.Display.Model != "gpt-5.6" {
+	if captured.Selection.ProviderID != codexmodel.ProviderID || captured.Selection.ModelID != "gpt-5.6" || captured.AgentName != "codex" {
 		t.Fatalf("runtime config = %#v", captured)
 	}
 }

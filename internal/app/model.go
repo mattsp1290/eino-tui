@@ -33,11 +33,10 @@ type Config struct {
 	Model    string
 }
 
-func New(ctx context.Context, service runtimeui.Service, configs ...Config) *Model {
-	display := Config{Provider: "Codex subscription", Model: "gpt-5.5"}
-	if len(configs) > 0 {
-		display.Provider = safeMetadata(configs[0].Provider, "Codex subscription", 128)
-		display.Model = safeMetadata(configs[0].Model, "unknown model", 256)
+func New(ctx context.Context, service runtimeui.Service, cfg Config) *Model {
+	display := Config{
+		Provider: safeMetadata(cfg.Provider, "Codex subscription", 128),
+		Model:    safeMetadata(cfg.Model, "unknown model", 256),
 	}
 	input := textarea.New()
 	input.Placeholder = "Type a message…"

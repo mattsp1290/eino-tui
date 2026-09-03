@@ -148,20 +148,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	display := runtimeui.DisplayMetadata{Provider: "Codex subscription", Model: options.Model}
 	runtimeConfig := runtimeui.Config{
 		Resolver:     resolver,
 		Selection:    modelSelection(options.Model),
 		AgentName:    "codex",
 		SystemPrompt: "Be a helpful, tool-free conversational assistant. Do not claim filesystem or shell access.",
-		Display:      display,
 	}
 	service, err = deps.OpenService(commandCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, runtimeConfig)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{Provider: display.Provider, Model: display.Model})
+	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{Provider: "Codex subscription", Model: options.Model})
 	program = deps.NewProgram(model, commandCtx, stdin, stdout)
 	if program == nil {
 		panic("nil program")
