@@ -20,7 +20,7 @@ func TestHistoryProjectionOmitsInterruptedEmptyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	chat, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}

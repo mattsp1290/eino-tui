@@ -1,31 +1,42 @@
 # eino-tui
 
-`eino-tui` is a local terminal chat demonstrating durable, incremental Eino streaming without credentials. It runs a deterministic scripted model in process, stores each workspace's conversation in SQLite through [`eino-agent`](https://github.com/mattsp1290/eino-agent), and restores that conversation the next time it starts.
+`eino-tui` is a tool-free terminal chat backed by ChatGPT Codex subscription access. It streams responses through [`eino-providers`](https://github.com/mattsp1290/eino-providers), keeps each workspace's conversation in SQLite through [`eino-agent`](https://github.com/mattsp1290/eino-agent), and restores that conversation after relaunch.
 
-The demo is deliberately not a semantic AI assistant. It makes no provider or model network calls, reads no provider credentials, and always streams clearly labeled test content.
+Prompts and responses are sent to the Codex service. Durable conversation rows, including opaque provider-continuation state, remain in the local `sessions.db`; protect its backups and filesystem access accordingly.
 
-## Requirements and support
+## Requirements
 
-- macOS or Linux; Windows is deferred.
-- Go 1.26.3. An older Go installation can use Go's automatic toolchain support with `GOTOOLCHAIN=auto`.
-- An interactive terminal and a writable per-user state directory.
+- macOS or Linux; Windows is not supported yet.
+- Go 1.26.3 to build from source.
+- An interactive terminal, writable user config/state directories, and an eligible ChatGPT subscription. Local login status does not prove plan eligibility, model availability, or remaining quota.
 
-## Run and build
+## Login and launch
 
-Run directly from a checkout:
-
-```sh
-GOTOOLCHAIN=auto go run ./cmd/eino-tui
-```
-
-Or build a binary:
+Build the binary:
 
 ```sh
 GOTOOLCHAIN=auto go build -o eino-tui ./cmd/eino-tui
+```
+
+Authorize this application using the device flow, then launch it from the workspace whose conversation you want:
+
+```sh
+./eino-tui login
+./eino-tui status
 ./eino-tui
 ```
 
-Run the complete local quality gate with:
+Device login is the only supported login flow. `status` reads local credential state without refreshing or contacting the service. On a successful read, its only possible status text is `logged in`, `logged in; refresh required on next request`, or `not logged in`. A credential-read failure prints the fixed authentication diagnostic to standard error and exits with status 6.
+
+The default model is `gpt-5.5`. Choose another canonical Codex-admitted model for one process with:
+
+```sh
+./eino-tui --model gpt-5.6
+```
+
+The model is fixed for that process and its durable run snapshots. There is no silent fallback if the service or account rejects it.
+
+Run the complete credential-free quality gate with:
 
 ```sh
 make check
@@ -38,31 +49,47 @@ make check
 | Enter | Submit a nonblank prompt while idle |
 | Alt+Enter | Insert a newline |
 | Esc | Interrupt a response that is starting or streaming |
-| Ctrl+C | Quit, interrupting and durably settling an active demo turn first |
+| Ctrl+C | Quit, interrupting and durably settling an active turn first |
 | Ctrl+D | Quit only while idle, discarding any unsent draft |
 
-Bracketed paste is inserted as text. Embedded newlines in pasted text do not submit it; press Enter explicitly.
+Bracketed paste is inserted as text. Embedded newlines do not submit it; press Enter explicitly.
 
-## Durable state
+## Credentials and durable state
 
-There is one versioned session identity per canonical workspace, so launching through an absolute, relative, or symlink spelling of the same directory restores the same conversation. Different workspaces use distinct sessions in one protected global SQLite database.
+`eino-tui` owns a separate credential store from the official Codex CLI and does not read or parse the CLI's cache. Treat `auth.json` like a password. Its default location is:
 
-Default database locations are:
+- Linux: `$XDG_CONFIG_HOME/eino-tui/auth.json`, or `~/.config/eino-tui/auth.json` when `XDG_CONFIG_HOME` is unset.
+- macOS: `~/Library/Application Support/eino-tui/auth.json`.
+
+This release intentionally has no browser-login or logout command because every interactive diagnostic must remain in application-owned output. Deleting this local credential file prevents this installation from reusing the stored token, but does not prove that the refresh token was revoked server-side. There is currently no verified in-app or account-side per-app revocation workflow for this integration. For suspected compromise, follow [OpenAI account-security guidance](https://help.openai.com/en/articles/8304786) and contact Support. The official [Codex authentication guide](https://learn.chatgpt.com/docs/auth) has additional credential-handling context.
+
+Conversation database locations are:
 
 - Linux: `$XDG_STATE_HOME/eino-tui/sessions.db`, or `~/.local/state/eino-tui/sessions.db` when `XDG_STATE_HOME` is unset.
 - macOS: `~/Library/Application Support/eino-tui/sessions.db`.
 
-Set `EINO_TUI_STATE_DIR` to an absolute directory to override the state location. The directory is protected as `0700` and `sessions.db` as `0600`; symlinked state targets are rejected.
+Set `EINO_TUI_STATE_DIR` to an absolute directory to override only the conversation-state location. State directories are protected as `0700` and `sessions.db` as `0600`; symlinked state targets are rejected.
 
-To reset all demo conversations, quit every running `eino-tui` process and remove only the resolved `sessions.db` file (and its adjacent `sessions.db-wal`/`sessions.db-shm` files if present). Do not recursively delete a home, config, or state root.
+Workspace sessions use a `workspace-v2` identity derived from the canonical workspace path, so absolute, relative, and symlink spellings reopen the same Codex conversation. Earlier `workspace-v1` demo rows remain stored but are not loaded into Codex context. No automatic migration or deletion is performed.
 
-An abrupt process death can leave a five-second durable lease. The next launch displays a fixed recovery notice, waits for that lease to expire, reclaims the tool-free turn as interrupted, and preserves its admitted user message. An empty assistant placeholder is never rendered.
+An abrupt process death can leave a five-second durable lease. The next launch waits for expiry, recovers the unfinished turn as interrupted, and preserves its admitted user message. An empty assistant placeholder is never rendered.
 
-## Troubleshooting
+## Fixed diagnostics
 
-- **Startup diagnostic:** verify the launch workspace exists and is a directory, and that the resolved state parent is writable and owned by the current user. A relative `EINO_TUI_STATE_DIR` is rejected.
-- **Terminal program diagnostic:** run from an interactive terminal with a valid `TERM`; redirected or unsupported terminal input can prevent startup.
-- **Forced-shutdown diagnostic:** the two-second cleanup budget expired. Relaunch in the same workspace and state directory to use lease recovery; do not delete durable state.
-- **Internal application diagnostic:** the application recovered an app-owned panic and redacted the panic value and stack. Terminal restoration and durable cleanup were still attempted.
+- Logged out: run `eino-tui login` before launching chat.
+- Device login or credential access failed: retry login/status; raw auth errors and paths are intentionally hidden.
+- Plan not included: the authenticated ChatGPT plan does not include Codex access.
+- Quota exhausted: wait for quota availability before retrying.
+- Provider failure: refresh, transport, HTTP, or decoding failed; retry after checking connectivity and service availability.
+- Conversation unavailable: local durable history could not be reconciled; inspect state ownership and permissions.
+- Forced shutdown: cleanup exceeded two seconds; relaunch in the same workspace to use lease recovery.
 
-The app never renders raw provider, store, or model errors, reasoning content, panic values, filesystem paths carried by failures, or terminal control sequences. A panic inside a Bubble Tea-owned background goroutine remains a dependency-level residual risk.
+The terminal never renders tokens, account identifiers, auth paths, raw provider bodies/errors, encrypted reasoning, or panic values.
+
+## Scope
+
+This is terminal chat, not an autonomous coding agent. It has no tools, filesystem or shell access, permission prompts, provider picker, reasoning display, usage/cost display, or coding-agent autonomy.
+
+## Manual subscription smoke test
+
+Automated tests use scripted HTTP and never read the default credential path. Before release, follow the [manual subscription smoke test](docs/manual-subscription-smoke.md): check status, complete device login, observe multiple streaming updates over two related turns, interrupt and continue, then relaunch from the workspace and a symlink spelling to confirm transcript continuity. Record only pass/fail, commit, provider version, model, OS, and UTC time—never credentials, account data, prompt/response bodies, or auth paths.

@@ -17,7 +17,7 @@ func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionID := platform.WorkspaceSessionID(root)
-	service, err := Open(ctx, paths.Database, sessionID, root)
+	service, err := openFixture(ctx, paths.Database, sessionID, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := Open(ctx, paths.Database, sessionID, root)
+	reopened, err := openFixture(ctx, paths.Database, sessionID, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestServiceInterruptKeepsAdmittedUserAndOmitsEmptyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(root), root)
+	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(root), root)
 	if err != nil {
 		t.Fatal(err)
 	}

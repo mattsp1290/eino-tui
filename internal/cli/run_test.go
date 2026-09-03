@@ -4,17 +4,49 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	agentmodel "github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/app"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
+	"github.com/mattsp1290/eino-tui/internal/subscription"
 )
+
+type testSubscription struct {
+	status subscription.Status
+}
+
+type scriptedSubscription struct {
+	login  func(context.Context) error
+	status func(context.Context) (subscription.Status, error)
+	http   func(context.Context) (*http.Client, error)
+}
+
+func (s scriptedSubscription) LoginDevice(ctx context.Context) error { return s.login(ctx) }
+func (s scriptedSubscription) Status(ctx context.Context) (subscription.Status, error) {
+	return s.status(ctx)
+}
+func (s scriptedSubscription) HTTPClient(ctx context.Context) (*http.Client, error) {
+	return s.http(ctx)
+}
+
+func (s testSubscription) LoginDevice(context.Context) error { return nil }
+func (s testSubscription) Status(context.Context) (subscription.Status, error) {
+	return s.status, nil
+}
+func (testSubscription) HTTPClient(context.Context) (*http.Client, error) {
+	return &http.Client{}, nil
+}
 
 type testProgram struct {
 	err          error
@@ -64,7 +96,7 @@ func TestRunApplicationFactoryPanicIsRedactedAndClosesService(t *testing.T) {
 	service := &testService{}
 	program := &testProgram{}
 	deps := testDeps(t, service, program)
-	deps.NewApplication = func(context.Context, runtimeui.Service, context.CancelFunc) (tea.Model, *app.Fatal) {
+	deps.NewApplication = func(context.Context, runtimeui.Service, context.CancelFunc, app.Config) (tea.Model, *app.Fatal) {
 		panic("secret /tmp/private")
 	}
 	var stderr bytes.Buffer
@@ -88,7 +120,7 @@ func TestRunLifecyclePanicsAreRedacted(t *testing.T) {
 					panic("secret /tmp/prepare")
 				}
 			case "open service":
-				deps.OpenService = func(context.Context, string, session.ID, string) (runtimeui.Service, error) {
+				deps.OpenService = func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
 					panic("secret /tmp/open")
 				}
 			case "close service":
@@ -113,9 +145,14 @@ func testDeps(t *testing.T, service runtimeui.Service, program *testProgram) Dep
 		WorkingDirectory: func() (string, error) { return root, nil },
 		StateDirectory:   func() (string, error) { return filepath.Join(root, "state"), nil },
 		PrepareState:     platform.PrepareState,
-		OpenService:      func(context.Context, string, session.ID, string) (runtimeui.Service, error) { return service, nil },
-		NewApplication: func(ctx context.Context, service runtimeui.Service, cancel context.CancelFunc) (tea.Model, *app.Fatal) {
-			return app.Safe(app.New(ctx, service), cancel)
+		NewSubscription:  func(io.Writer) Subscription { return testSubscription{status: subscription.LoggedIn} },
+		SignalContext:    context.WithCancel,
+		NewResolver:      codexmodel.NewResolver,
+		OpenService: func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
+			return service, nil
+		},
+		NewApplication: func(ctx context.Context, service runtimeui.Service, cancel context.CancelFunc, cfg app.Config) (tea.Model, *app.Fatal) {
+			return app.Safe(app.New(ctx, service, cfg), cancel)
 		},
 		NewProgram: func(tea.Model, context.Context, io.Reader, io.Writer) Program { return program },
 	}
@@ -162,5 +199,196 @@ func TestRunHelpAndVersionDoNotInitialize(t *testing.T) {
 		if code != ExitOK || out.Len() == 0 {
 			t.Fatalf("%s: %d %q", arg, code, out.String())
 		}
+	}
+}
+
+func TestRunInvalidArgumentsDoNotInitialize(t *testing.T) {
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--model", "gpt-5.5\nTOKEN"}, strings.NewReader(""), io.Discard, &stderr, Dependencies{})
+	if code != ExitStartup || strings.Contains(stderr.String(), "TOKEN") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunStatusIsLocalAndPreSignal(t *testing.T) {
+	for _, test := range []struct {
+		status subscription.Status
+		want   string
+	}{
+		{subscription.NotLoggedIn, "not logged in\n"},
+		{subscription.LoggedIn, "logged in\n"},
+		{subscription.RefreshRequired, "logged in; refresh required on next request\n"},
+	} {
+		var signalCalls int
+		deps := Dependencies{
+			NewSubscription: func(io.Writer) Subscription {
+				return scriptedSubscription{
+					status: func(context.Context) (subscription.Status, error) { return test.status, nil },
+					login:  func(context.Context) error { panic("network login") },
+					http:   func(context.Context) (*http.Client, error) { panic("refresh") },
+				}
+			},
+			SignalContext: func(context.Context) (context.Context, context.CancelFunc) {
+				signalCalls++
+				panic("signal ownership")
+			},
+		}
+		var stdout bytes.Buffer
+		if code := Run(context.Background(), []string{"status"}, strings.NewReader(""), &stdout, io.Discard, deps); code != ExitOK || stdout.String() != test.want || signalCalls != 0 {
+			t.Fatalf("status=%v code=%d stdout=%q signal=%d", test.status, code, stdout.String(), signalCalls)
+		}
+	}
+}
+
+func TestRunLoginUsesSignalContextAndFixedOutput(t *testing.T) {
+	var signaled bool
+	deps := Dependencies{
+		SignalContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+			signaled = true
+			return context.WithCancel(ctx)
+		},
+		NewSubscription: func(io.Writer) Subscription {
+			return scriptedSubscription{
+				login: func(context.Context) error {
+					if !signaled {
+						t.Fatal("device login preceded signal context")
+					}
+					return nil
+				},
+				status: func(context.Context) (subscription.Status, error) { panic("status") },
+				http:   func(context.Context) (*http.Client, error) { panic("http") },
+			}
+		},
+	}
+	var stdout bytes.Buffer
+	if code := Run(context.Background(), []string{"login"}, strings.NewReader(""), &stdout, io.Discard, deps); code != ExitOK || !strings.Contains(stdout.String(), "authorization complete") {
+		t.Fatalf("code=%d stdout=%q", code, stdout.String())
+	}
+}
+
+func TestRunAuthFailuresUseFixedCodesAndDiagnostics(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		sub  scriptedSubscription
+		want int
+		text string
+	}{
+		{
+			name: "status read", args: []string{"status"}, want: ExitAuth, text: authDiagnostic,
+			sub: scriptedSubscription{status: func(context.Context) (subscription.Status, error) { return 0, errors.New("TOKEN /tmp/private") }},
+		},
+		{
+			name: "login failure", args: []string{"login"}, want: ExitAuth, text: loginDiagnostic,
+			sub: scriptedSubscription{login: func(context.Context) error { return errors.New("TOKEN /tmp/private") }},
+		},
+		{
+			name: "login cancellation", args: []string{"login"}, want: ExitInterrupted, text: loginInterrupted,
+			sub: scriptedSubscription{login: func(context.Context) error { return fmt.Errorf("wrapped: %w", context.Canceled) }},
+		},
+		{
+			name: "authenticated client", want: ExitAuth, text: authDiagnostic,
+			sub: scriptedSubscription{
+				status: func(context.Context) (subscription.Status, error) { return subscription.LoggedIn, nil },
+				http:   func(context.Context) (*http.Client, error) { return nil, errors.New("TOKEN /tmp/private") },
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := Dependencies{SignalContext: context.WithCancel, NewSubscription: func(io.Writer) Subscription { return test.sub }}
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), test.args, strings.NewReader(""), &stdout, &stderr, deps)
+			if code != test.want || !strings.Contains(stderr.String(), test.text) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			combined := stdout.String() + stderr.String()
+			if strings.Contains(combined, "TOKEN") || strings.Contains(combined, "/tmp/private") {
+				t.Fatalf("auth error leaked: %q", combined)
+			}
+		})
+	}
+}
+
+func TestRunLoggedOutStopsBeforeTransportAndFilesystem(t *testing.T) {
+	deps := Dependencies{
+		SignalContext: context.WithCancel,
+		NewSubscription: func(io.Writer) Subscription {
+			return scriptedSubscription{
+				status: func(context.Context) (subscription.Status, error) { return subscription.NotLoggedIn, nil },
+				http:   func(context.Context) (*http.Client, error) { panic("HTTP client created") },
+				login:  func(context.Context) error { panic("login") },
+			}
+		},
+		WorkingDirectory: func() (string, error) { panic("filesystem touched") },
+	}
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), nil, strings.NewReader(""), io.Discard, &stderr, deps); code != ExitAuth || stderr.String() != notLoggedIn+"\n" {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
+	root := t.TempDir()
+	client := &http.Client{}
+	service := &testService{}
+	program := &testProgram{}
+	var calls []string
+	var captured runtimeui.Config
+	deps := Dependencies{
+		SignalContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+			calls = append(calls, "signal")
+			return context.WithCancel(ctx)
+		},
+		NewSubscription: func(io.Writer) Subscription {
+			calls = append(calls, "subscription")
+			return scriptedSubscription{
+				status: func(context.Context) (subscription.Status, error) {
+					calls = append(calls, "status")
+					return subscription.LoggedIn, nil
+				},
+				http:  func(context.Context) (*http.Client, error) { calls = append(calls, "http"); return client, nil },
+				login: func(context.Context) error { panic("login") },
+			}
+		},
+		WorkingDirectory: func() (string, error) { calls = append(calls, "cwd"); return root, nil },
+		StateDirectory:   func() (string, error) { calls = append(calls, "state"); return filepath.Join(root, "state"), nil },
+		PrepareState: func(ctx context.Context, path string) (platform.Paths, error) {
+			calls = append(calls, "prepare")
+			return platform.PrepareState(ctx, path)
+		},
+		NewResolver: func(ctx context.Context, got *http.Client, modelID string) (agentmodel.Resolver, error) {
+			calls = append(calls, "resolver")
+			if got != client || modelID != "gpt-5.6" {
+				t.Fatalf("resolver input = %p %q", got, modelID)
+			}
+			return codexmodel.NewResolver(ctx, got, modelID)
+		},
+		OpenService: func(_ context.Context, _ string, _ session.ID, _ string, cfg runtimeui.Config) (runtimeui.Service, error) {
+			calls = append(calls, "open")
+			captured = cfg
+			return service, nil
+		},
+		NewApplication: func(ctx context.Context, got runtimeui.Service, cancel context.CancelFunc, cfg app.Config) (tea.Model, *app.Fatal) {
+			calls = append(calls, "app")
+			if got != service || cfg.Model != "gpt-5.6" || cfg.Provider != "Codex subscription" {
+				t.Fatalf("application inputs = %T %#v", got, cfg)
+			}
+			return app.Safe(app.New(ctx, got, cfg), cancel)
+		},
+		NewProgram: func(tea.Model, context.Context, io.Reader, io.Writer) Program {
+			calls = append(calls, "program")
+			return program
+		},
+	}
+	if code := Run(context.Background(), []string{"--model", "gpt-5.6"}, strings.NewReader(""), io.Discard, io.Discard, deps); code != ExitOK {
+		t.Fatalf("code=%d", code)
+	}
+	want := []string{"signal", "subscription", "status", "http", "cwd", "state", "prepare", "resolver", "open", "app", "program"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls=%v want=%v", calls, want)
+	}
+	if captured.Selection.ProviderID != codexmodel.ProviderID || captured.Selection.ModelID != "gpt-5.6" || captured.AgentName != "codex" {
+		t.Fatalf("runtime config = %#v", captured)
 	}
 }

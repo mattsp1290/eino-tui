@@ -10,7 +10,7 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 )
 
-const workspaceDomain = "eino-tui/workspace-session/v1\x00"
+const workspaceDomain = "eino-tui/workspace-session/v2\x00"
 
 // CanonicalWorkspace resolves an existing directory to one stable launch path.
 func CanonicalWorkspace(path string) (string, error) {
@@ -36,5 +36,5 @@ func CanonicalWorkspace(path string) (string, error) {
 // WorkspaceSessionID avoids putting a raw local path in durable identifiers.
 func WorkspaceSessionID(canonical string) session.ID {
 	digest := sha256.Sum256([]byte(workspaceDomain + canonical))
-	return session.ID("workspace-v1-" + hex.EncodeToString(digest[:]))
+	return session.ID("workspace-v2-" + hex.EncodeToString(digest[:]))
 }

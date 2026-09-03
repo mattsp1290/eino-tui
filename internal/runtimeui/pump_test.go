@@ -3,11 +3,14 @@ package runtimeui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	codexauth "github.com/mattsp1290/codex-auth-go"
 	"github.com/mattsp1290/eino-agent/composition"
 	"github.com/mattsp1290/eino-agent/config"
 	"github.com/mattsp1290/eino-agent/model"
@@ -91,6 +94,67 @@ type panicRunIDHandle struct {
 	done  chan agentruntime.Result
 }
 
+type settledHandle struct{ id session.RunID }
+
+func (h settledHandle) RunID() session.RunID                  { return h.id }
+func (settledHandle) Done() <-chan agentruntime.Result        { return nil }
+func (settledHandle) Interrupt(context.Context, string) error { return nil }
+
+func TestFinishPumpClassifiesOnlyStableProviderSentinels(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "plan wrapped", err: fmt.Errorf("sensitive TOKEN /tmp/path: %w", codexauth.ErrPlanNotIncluded), want: NoticePlanUnavailable},
+		{name: "quota joined", err: errors.Join(errors.New("sensitive TOKEN /tmp/path"), codexauth.ErrQuotaExceeded), want: NoticeQuotaExceeded},
+		{name: "generic", err: errors.New("usage_not_included TOKEN /tmp/path\n\x1b]0;leak\a"), want: NoticeProviderFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chat := newOrchestratorTestService(t, orchestratorFunc{})
+			run := newRun("classification-run")
+			active := &activeRun{run: run, handle: settledHandle{id: "classification-run"}, cancelRun: func() {}, cancelTail: func() {}, interrupt: make(chan string, 1)}
+			chat.active, chat.state = active, stateRunning
+			chat.finishPump(active, Snapshot{}, agentruntime.Result{RunID: "classification-run", Status: session.RunFailed, Error: test.err}, 1, false)
+			snapshot, ok := run.Next(context.Background())
+			if !ok || snapshot.Notice != test.want {
+				t.Fatalf("snapshot = %#v", snapshot)
+			}
+			visible := fmt.Sprintf("%#v", snapshot)
+			if strings.Contains(visible, "TOKEN") || strings.Contains(visible, "/tmp/path") || strings.Contains(visible, "usage_not_included") {
+				t.Fatalf("error leaked: %s", visible)
+			}
+			closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := chat.Close(closeCtx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestFinishPumpHistoryFailureTakesPrecedenceOverProviderClassification(t *testing.T) {
+	chat := newOrchestratorTestService(t, orchestratorFunc{})
+	failing := &failListStore{durableStore: chat.store}
+	failing.remaining.Store(1)
+	chat.store = failing
+	run := newRun("precedence-run")
+	active := &activeRun{run: run, handle: settledHandle{id: "precedence-run"}, cancelRun: func() {}, cancelTail: func() {}, interrupt: make(chan string, 1)}
+	chat.active, chat.state = active, stateRunning
+	initial := Snapshot{Messages: []Message{{Role: RoleUser, Content: "safe prompt"}}}
+	chat.finishPump(active, initial, agentruntime.Result{RunID: "precedence-run", Status: session.RunFailed, Error: codexauth.ErrPlanNotIncluded}, 1, false)
+	snapshot, ok := run.Next(context.Background())
+	if !ok || snapshot.Notice != NoticeUnavailable || !snapshot.Resync {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := chat.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (h *panicRunIDHandle) RunID() session.RunID {
 	if h.calls.Add(1) == 2 {
 		panic("secret prompt /tmp/private")
@@ -154,7 +218,7 @@ func TestPumpPanicsCannotStrandRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		opened, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+		opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +248,7 @@ func TestPostAdmissionProjectionFailureStillReturnsAdmittedRunAndReconciles(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}

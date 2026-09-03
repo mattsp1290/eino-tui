@@ -2,8 +2,10 @@ package runtimeui
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	codexauth "github.com/mattsp1290/codex-auth-go"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
 )
@@ -125,12 +127,20 @@ func (s *service) finishPump(active *activeRun, initial Snapshot, result agentru
 		terminal.Messages = initial.Messages
 		terminal.Resync = true
 		terminal.Notice = NoticeUnavailable
-	}
-	switch result.Status {
-	case session.RunInterrupted:
-		terminal.Notice = NoticeInterrupted
-	case session.RunFailed:
-		terminal.Notice = NoticeFailed
+	} else {
+		switch result.Status {
+		case session.RunInterrupted:
+			terminal.Notice = NoticeInterrupted
+		case session.RunFailed:
+			switch {
+			case errors.Is(result.Error, codexauth.ErrPlanNotIncluded):
+				terminal.Notice = NoticePlanUnavailable
+			case errors.Is(result.Error, codexauth.ErrQuotaExceeded):
+				terminal.Notice = NoticeQuotaExceeded
+			default:
+				terminal.Notice = NoticeProviderFailed
+			}
+		}
 	}
 	s.clearActive(active)
 	active.run.finish(terminal)

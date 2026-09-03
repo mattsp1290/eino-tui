@@ -84,7 +84,9 @@ var (
 const (
 	NoticeRecoveryWaiting = "Waiting to recover an unfinished local turn…"
 	NoticeInterrupted     = "Response interrupted."
-	NoticeFailed          = "The demo response failed."
+	NoticePlanUnavailable = "Your ChatGPT plan does not include Codex access."
+	NoticeQuotaExceeded   = "Your Codex quota is exhausted. Try again later."
+	NoticeProviderFailed  = "The Codex provider could not complete the response."
 	NoticeUnavailable     = "Conversation history is temporarily unavailable."
 	NoticeHistoryOmitted  = "Older durable messages are omitted from this view."
 )

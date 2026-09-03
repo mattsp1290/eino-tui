@@ -50,7 +50,7 @@ func TestCanonicalWorkspaceAndSessionIdentity(t *testing.T) {
 	if WorkspaceSessionID(otherCanonical) == WorkspaceSessionID(a) {
 		t.Fatal("different workspaces shared an id")
 	}
-	if got := string(WorkspaceSessionID(a)); len(got) != len("workspace-v1-")+64 {
+	if got := string(WorkspaceSessionID(a)); len(got) != len("workspace-v2-")+64 {
 		t.Fatalf("unexpected id %q", got)
 	}
 	file := filepath.Join(root, "file")
@@ -66,8 +66,12 @@ func TestCanonicalWorkspaceAndSessionIdentity(t *testing.T) {
 }
 
 func TestWorkspaceSessionIDStableFixture(t *testing.T) {
-	want := "workspace-v1-32dabbe4792e0560188b21970685d0dc39524d366f759bd5abf87a77d2675e29"
+	want := "workspace-v2-8e3755075f60db112335cfd5ca43a142d3514e96ca30d09a56ead6c6bb320331"
 	if got := string(WorkspaceSessionID("/tmp/workspace")); got != want {
 		t.Fatalf("fixture = %q", got)
+	}
+	const previous = "workspace-v1-32dabbe4792e0560188b21970685d0dc39524d366f759bd5abf87a77d2675e29"
+	if want == previous {
+		t.Fatal("v2 identity reused the v1 domain")
 	}
 }
