@@ -5,16 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/signal"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	codexauth "github.com/mattsp1290/codex-auth-go"
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-tui/internal/app"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
+	"github.com/mattsp1290/eino-tui/internal/subscription"
 )
 
-const Version = "0.1.0-demo"
+const Version = "0.2.0"
 
 const (
 	ExitOK             = 0
@@ -22,15 +25,28 @@ const (
 	ExitProgram        = 3
 	ExitFatal          = 4
 	ExitForcedShutdown = 5
+	ExitAuth           = 6
+	ExitInterrupted    = 130
 )
 
 const (
 	startupDiagnostic = "eino-tui could not start; check workspace and state permissions"
 	programDiagnostic = "eino-tui stopped because the terminal program failed"
 	forcedDiagnostic  = "eino-tui forced shutdown; the unfinished turn will be recovered on next launch"
+	authDiagnostic    = "eino-tui could not access Codex authentication"
+	loginDiagnostic   = "eino-tui device login failed"
+	loginInterrupted  = "eino-tui device login interrupted"
+	notLoggedIn       = "eino-tui is not logged in; run `eino-tui login`"
+	usageText         = "Usage: eino-tui [--model <model>]\n       eino-tui login\n       eino-tui status\n       eino-tui --help\n       eino-tui --version"
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps Dependencies) (code int) {
+	options, err := Parse(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "eino-tui: invalid command or model")
+		fmt.Fprintln(stderr, usageText)
+		return ExitStartup
+	}
 	var service runtimeui.Service
 	var program Program
 	defer func() {
@@ -48,18 +64,64 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, app.FatalDiagnostic)
 		code = ExitFatal
 	}()
-	if len(args) > 0 {
-		switch args[0] {
-		case "-h", "--help":
-			fmt.Fprintln(stdout, "Usage: eino-tui [--help|--version]")
-			return ExitOK
-		case "-v", "--version":
-			fmt.Fprintln(stdout, Version)
-			return ExitOK
-		default:
-			fmt.Fprintln(stderr, "eino-tui: unsupported argument")
-			return ExitStartup
+	switch options.Command {
+	case CommandHelp:
+		fmt.Fprintln(stdout, usageText)
+		return ExitOK
+	case CommandVersion:
+		fmt.Fprintln(stdout, Version)
+		return ExitOK
+	case CommandStatus:
+		manager := deps.NewSubscription(io.Discard)
+		status, statusErr := manager.Status(ctx)
+		if statusErr != nil {
+			fmt.Fprintln(stderr, authDiagnostic)
+			return ExitAuth
 		}
+		switch status {
+		case subscription.LoggedIn:
+			fmt.Fprintln(stdout, "logged in")
+		case subscription.RefreshRequired:
+			fmt.Fprintln(stdout, "logged in; refresh required on next request")
+		default:
+			fmt.Fprintln(stdout, "not logged in")
+		}
+		return ExitOK
+	}
+
+	commandCtx, stop := deps.SignalContext(ctx)
+	defer stop()
+	manager := deps.NewSubscription(stdout)
+	if options.Command == CommandLogin {
+		fmt.Fprintln(stdout, "Starting Codex device authorization…")
+		if loginErr := manager.LoginDevice(commandCtx); loginErr != nil {
+			if errors.Is(loginErr, context.Canceled) || errors.Is(loginErr, context.DeadlineExceeded) {
+				fmt.Fprintln(stderr, loginInterrupted)
+				return ExitInterrupted
+			}
+			fmt.Fprintln(stderr, loginDiagnostic)
+			return ExitAuth
+		}
+		fmt.Fprintln(stdout, "Codex device authorization complete.")
+		return ExitOK
+	}
+	status, err := manager.Status(commandCtx)
+	if err != nil {
+		fmt.Fprintln(stderr, authDiagnostic)
+		return ExitAuth
+	}
+	if status == subscription.NotLoggedIn {
+		fmt.Fprintln(stderr, notLoggedIn)
+		return ExitAuth
+	}
+	httpClient, err := manager.HTTPClient(commandCtx)
+	if err != nil {
+		if errors.Is(err, codexauth.ErrNotLoggedIn) {
+			fmt.Fprintln(stderr, notLoggedIn)
+		} else {
+			fmt.Fprintln(stderr, authDiagnostic)
+		}
+		return ExitAuth
 	}
 	cwd, err := deps.WorkingDirectory()
 	if err != nil {
@@ -76,20 +138,31 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	paths, err := deps.PrepareState(ctx, stateDir)
+	paths, err := deps.PrepareState(commandCtx, stateDir)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	appCtx, stop := signal.NotifyContext(ctx, platform.Signals()...)
-	defer stop()
-	service, err = deps.OpenService(appCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	resolver, err := deps.NewResolver(commandCtx, httpClient, options.Model)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	model, fatal := deps.NewApplication(appCtx, service, stop)
-	program = deps.NewProgram(model, appCtx, stdin, stdout)
+	display := runtimeui.DisplayMetadata{Provider: "Codex subscription", Model: options.Model}
+	runtimeConfig := runtimeui.Config{
+		Resolver:     resolver,
+		Selection:    modelSelection(options.Model),
+		AgentName:    "codex",
+		SystemPrompt: "Be a helpful, tool-free conversational assistant. Do not claim filesystem or shell access.",
+		Display:      display,
+	}
+	service, err = deps.OpenService(commandCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, runtimeConfig)
+	if err != nil {
+		fmt.Fprintln(stderr, startupDiagnostic)
+		return ExitStartup
+	}
+	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{Provider: display.Provider, Model: display.Model})
+	program = deps.NewProgram(model, commandCtx, stdin, stdout)
 	if program == nil {
 		panic("nil program")
 	}
@@ -114,6 +187,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return ExitProgram
 	}
 	return ExitOK
+}
+
+func modelSelection(modelID string) model.Selection {
+	return model.Selection{ProviderID: codexmodel.ProviderID, ModelID: model.ID(modelID)}
 }
 
 func closeService(service runtimeui.Service, ctx context.Context) (err error, recovered bool) {

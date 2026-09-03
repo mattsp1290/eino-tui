@@ -31,9 +31,9 @@ func TimerWait(duration time.Duration) Waiter {
 // Resolver uses the public fake provider path, then adds observable pacing.
 func Resolver(wait Waiter) model.Resolver {
 	return resolverWithSteps(wait, []fake.Step{
-		{Content: "Demo response: "},
+		{Content: "Codex fixture response: "},
 		{Content: "your message was received. "},
-		{Content: "No provider credentials or network model call were used."},
+		{Content: "Deterministic test transport completed."},
 	})
 }
 

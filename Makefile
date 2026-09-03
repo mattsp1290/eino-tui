@@ -7,21 +7,23 @@ vet:
 	go vet ./...
 
 test:
-	go test ./internal/platform ./internal/textsafe ./internal/demomodel ./internal/runtimeui ./internal/app ./internal/cli
+	go test ./internal/platform ./internal/textsafe ./internal/demomodel ./internal/codexmodel ./internal/subscription ./internal/runtimeui ./internal/app ./internal/cli
 
 test-race:
-	go test -race ./internal/platform ./internal/textsafe ./internal/demomodel ./internal/runtimeui ./internal/app ./internal/cli ./internal/integration
+	go test -race ./...
 
 build:
 	go build ./cmd/eino-tui
 
 check-mod:
-	go mod tidy
-	git diff --exit-code -- go.mod go.sum
+	go mod tidy -diff
 	go mod verify
-	@! go list -m -json all | grep -q '"Replace"'
+	@! go list -m -json all | rg -q '"Replace"'
+	@! go list -deps ./cmd/eino-tui | rg -q 'github.com/mattsp1290/eino-tui/internal/(demomodel|pty)'
 	@test "$$(go list -m -f '{{.GoVersion}}')" = "1.26.3"
-	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.2.0"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.3.1"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/codex-auth-go)" = "v0.3.0"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-providers)" = "v0.0.0-20260606014731-3e0069d028bc"
 	@test "$$(go list -m -f '{{.Version}}' github.com/cloudwego/eino)" = "v0.8.13"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbletea/v2)" = "v2.0.9"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbles/v2)" = "v2.2.1"

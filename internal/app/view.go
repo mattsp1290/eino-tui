@@ -21,7 +21,7 @@ func (m *Model) refreshTranscript() {
 			if message.Role != runtimeui.RoleNotice {
 				label := "You"
 				if message.Role == runtimeui.RoleAssistant {
-					label = "Demo"
+					label = "Codex"
 				}
 				body = label + ":\n" + message.Content
 			}
@@ -42,14 +42,14 @@ func (m *Model) refreshTranscript() {
 		if sections != "" {
 			sections += "\n\n"
 		}
-		sections += wrap.Render("Demo (streaming):\n" + m.snapshot.LiveAssistant)
+		sections += wrap.Render("Codex (streaming):\n" + m.snapshot.LiveAssistant)
 	}
 	m.viewport.SetContent(sections)
 	m.viewport.GotoBottom()
 }
 
 func (m *Model) View() tea.View {
-	header := headerStyle.Render("eino-tui · credential-free demo")
+	header := headerStyle.Render("eino-tui · " + m.display.Provider + " · " + m.display.Model)
 	notice := m.snapshot.Notice
 	if notice == "" {
 		notice = phaseText(m.snapshot.Phase)
@@ -63,12 +63,12 @@ func (m *Model) View() tea.View {
 func phaseText(phase runtimeui.Phase) string {
 	switch phase {
 	case runtimeui.PhaseStarting:
-		return "Starting demo response…"
+		return "Starting Codex response…"
 	case runtimeui.PhaseRunning:
-		return "Streaming scripted demo response…"
+		return "Streaming Codex response…"
 	case runtimeui.PhaseRecoveryWaiting, runtimeui.PhaseRecovering:
 		return runtimeui.NoticeRecoveryWaiting
 	default:
-		return "Local scripted output; no network model call."
+		return "Codex subscription ready."
 	}
 }

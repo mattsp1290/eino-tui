@@ -17,16 +17,18 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 )
 
 type terminalProcess struct {
-	cmd    *exec.Cmd
-	file   *os.File
-	mu     sync.Mutex
-	output bytes.Buffer
-	done   chan error
+	cmd     *exec.Cmd
+	file    *os.File
+	mu      sync.Mutex
+	output  bytes.Buffer
+	done    chan struct{}
+	waitErr error
 }
 
 func buildBinary(t *testing.T, output, pkg string) {
@@ -56,12 +58,23 @@ func startTerminal(t *testing.T, binary string, args []string, workspace, state 
 	if err != nil {
 		t.Fatal(err)
 	}
-	process := &terminalProcess{cmd: cmd, file: file, done: make(chan error, 1)}
+	process := &terminalProcess{cmd: cmd, file: file, done: make(chan struct{})}
 	go func() { _, _ = io.Copy(lockedWriter{process}, file) }()
-	go func() { process.done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		process.mu.Lock()
+		process.waitErr = err
+		process.mu.Unlock()
+		close(process.done)
+	}()
 	t.Cleanup(func() {
 		_ = file.Close()
-		if cmd.ProcessState == nil && cmd.Process != nil {
+		select {
+		case <-process.done:
+			return
+		default:
+		}
+		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 			select {
 			case <-process.done:
@@ -81,6 +94,11 @@ func (w lockedWriter) Write(data []byte) (int, error) {
 }
 
 func (p *terminalProcess) text() string { p.mu.Lock(); defer p.mu.Unlock(); return p.output.String() }
+func (p *terminalProcess) exitError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr
+}
 func (p *terminalProcess) write(t *testing.T, data string) {
 	t.Helper()
 	if _, err := io.WriteString(p.file, data); err != nil {
@@ -100,8 +118,8 @@ func (p *terminalProcess) waitText(t *testing.T, needle string, timeout time.Dur
 			if strings.Contains(text, needle) {
 				return text
 			}
-		case err := <-p.done:
-			t.Fatalf("process exited before %q: %v\n%s", needle, err, p.text())
+		case <-p.done:
+			t.Fatalf("process exited before %q: %v\n%s", needle, p.exitError(), p.text())
 		case <-deadline.C:
 			t.Fatalf("timeout waiting for %q\n%s", needle, p.text())
 		}
@@ -110,25 +128,75 @@ func (p *terminalProcess) waitText(t *testing.T, needle string, timeout time.Dur
 func (p *terminalProcess) waitExit(t *testing.T, timeout time.Duration) error {
 	t.Helper()
 	select {
-	case err := <-p.done:
-		return err
+	case <-p.done:
+		return p.exitError()
 	case <-time.After(timeout):
 		t.Fatalf("process did not exit\n%s", p.text())
 		return nil
 	}
 }
 
-func TestProductionTerminalStreamingReplayAndRestoration(t *testing.T) {
+func TestProductionBinaryNoAuthCommandsNeverAcquireTerminal(t *testing.T) {
 	temp := t.TempDir()
 	production := filepath.Join(temp, "eino-tui")
 	buildBinary(t, production, "./cmd/eino-tui")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "help", args: []string{"--help"}, want: "Usage: eino-tui"},
+		{name: "version", args: []string{"--version"}, want: "0.2.0"},
+		{name: "invalid model", args: []string{"--model", "gpt-5.5\nTOKEN"}, want: "invalid command or model"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			process := startTerminal(t, production, test.args, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+			_ = process.waitExit(t, 3*time.Second)
+			output := process.text()
+			if !strings.Contains(output, test.want) || strings.Contains(output, "TOKEN") || strings.Contains(output, "\x1b[?1049h") {
+				t.Fatalf("production no-auth output = %q", output)
+			}
+		})
+	}
+}
+
+func TestFixtureAuthCommandsStayOutsideAlternateScreen(t *testing.T) {
+	temp := t.TempDir()
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "login", args: []string{"login"}, want: "SAFE-1234"},
+		{name: "status", args: []string{"status"}, want: "logged in"},
+		{name: "logged out chat", args: []string{"--logged-out"}, want: "run `eino-tui login`"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			process := startTerminal(t, fixture, test.args, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+			_ = process.waitExit(t, 3*time.Second)
+			output := process.text()
+			if !strings.Contains(output, test.want) || strings.Contains(output, "\x1b[?1049h") {
+				t.Fatalf("auth output = %q", output)
+			}
+		})
+	}
+}
+
+func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
+	temp := t.TempDir()
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
 	workspace := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state")
-	process := startTerminal(t, production, nil, workspace, state)
-	process.waitText(t, "credential-free demo", 3*time.Second)
+	process := startTerminal(t, fixture, nil, workspace, state)
+	process.waitText(t, "Codex subscription", 3*time.Second)
 	process.write(t, "hello λ\r")
-	process.waitText(t, "Demo response:", 3*time.Second)
-	process.waitText(t, "No provider credentials", 3*time.Second)
+	process.waitText(t, "response:", 3*time.Second)
+	process.waitText(t, "Deterministic test transport", 3*time.Second)
 	process.write(t, "\x03")
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)
@@ -141,9 +209,9 @@ func TestProductionTerminalStreamingReplayAndRestoration(t *testing.T) {
 		t.Fatalf("paste/cursor modes not restored: %q", output)
 	}
 
-	replay := startTerminal(t, production, nil, workspace, state)
+	replay := startTerminal(t, fixture, nil, workspace, state)
 	replay.waitText(t, "hello λ", 3*time.Second)
-	replay.waitText(t, "Demo response:", 3*time.Second)
+	replay.waitText(t, "Codex fixture response:", 3*time.Second)
 	replay.write(t, "\x04")
 	if err := replay.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("replay exit: %v", err)
@@ -152,21 +220,21 @@ func TestProductionTerminalStreamingReplayAndRestoration(t *testing.T) {
 
 func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	temp := t.TempDir()
-	production := filepath.Join(temp, "eino-tui")
 	fixture := filepath.Join(temp, "fixture")
-	buildBinary(t, production, "./cmd/eino-tui")
 	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
 	workspace := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state")
 
 	interrupted := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-	interrupted.waitText(t, "credential-free demo", 3*time.Second)
+	interrupted.waitText(t, "Codex subscription", 3*time.Second)
 	interrupted.write(t, "interrupt this\r")
 	interrupted.waitText(t, "interrupt this", 3*time.Second)
 	interrupted.write(t, "\x04")
 	time.Sleep(100 * time.Millisecond)
-	if interrupted.cmd.ProcessState != nil {
+	select {
+	case <-interrupted.done:
 		t.Fatal("ctrl+d quit during an active run")
+	default:
 	}
 	interrupted.write(t, "\x1b")
 	interrupted.waitText(t, "[interrupted]", 3*time.Second)
@@ -180,7 +248,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	}
 
 	killed := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-	killed.waitText(t, "credential-free demo", 3*time.Second)
+	killed.waitText(t, "Codex subscription", 3*time.Second)
 	killed.write(t, "hard kill turn\r")
 	killed.waitText(t, "hard kill turn", 3*time.Second)
 	if err := killed.cmd.Process.Kill(); err != nil {
@@ -188,11 +256,11 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	}
 	_ = killed.waitExit(t, 2*time.Second)
 
-	recovered := startTerminal(t, production, nil, workspace, state)
+	recovered := startTerminal(t, fixture, nil, workspace, state)
 	recovered.waitText(t, "Waiting to recover", 3*time.Second)
 	recovered.waitText(t, "Response interrupted.", 8*time.Second)
 	recovered.write(t, "after recovery\r")
-	recovered.waitText(t, "No provider credentials", 3*time.Second)
+	recovered.waitText(t, "Deterministic test transport", 3*time.Second)
 	recovered.write(t, "\x03")
 	if err := recovered.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("recovered exit: %v", err)
@@ -212,9 +280,9 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 		})
 	}
 	modelFailure := startTerminal(t, fixture, []string{"--model-error"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
-	modelFailure.waitText(t, "credential-free demo", 3*time.Second)
+	modelFailure.waitText(t, "Codex subscription", 3*time.Second)
 	modelFailure.write(t, "do not leak this\r")
-	modelFailure.waitText(t, "demo response failed", 3*time.Second)
+	modelFailure.waitText(t, "Codex provider could not complete", 3*time.Second)
 	modelFailure.write(t, "\x03")
 	_ = modelFailure.waitExit(t, 3*time.Second)
 	if output := modelFailure.text(); strings.Contains(output, "secret prompt") || strings.Contains(output, "/tmp/private") {
@@ -222,7 +290,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	}
 
 	wedged := startTerminal(t, fixture, []string{"--wedged-close"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
-	wedged.waitText(t, "credential-free demo", 3*time.Second)
+	wedged.waitText(t, "Codex subscription", 3*time.Second)
 	wedged.write(t, "\x03")
 	err := wedged.waitExit(t, 4*time.Second)
 	var exitErr *exec.ExitError
@@ -236,9 +304,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 
 func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 	temp := t.TempDir()
-	production := filepath.Join(temp, "eino-tui")
 	fixture := filepath.Join(temp, "fixture")
-	buildBinary(t, production, "./cmd/eino-tui")
 	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
 	for _, scenario := range []struct {
 		name string
@@ -251,7 +317,7 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 			workspace := t.TempDir()
 			state := filepath.Join(t.TempDir(), "state")
 			process := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-			process.waitText(t, "credential-free demo", 3*time.Second)
+			process.waitText(t, "Codex subscription", 3*time.Second)
 			prompt := "active " + scenario.name
 			process.write(t, prompt+"\r")
 			process.waitText(t, prompt, 3*time.Second)
@@ -265,7 +331,7 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 			if time.Since(started) > 2500*time.Millisecond {
 				t.Fatal("orderly shutdown exceeded budget")
 			}
-			replay := startTerminal(t, production, nil, workspace, state)
+			replay := startTerminal(t, fixture, nil, workspace, state)
 			replay.waitText(t, prompt, 3*time.Second)
 			replay.waitText(t, "[interrupted]", 3*time.Second)
 			if strings.Contains(replay.text(), "Waiting to recover") {
@@ -281,22 +347,22 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 
 func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	temp := t.TempDir()
-	production := filepath.Join(temp, "eino-tui")
-	buildBinary(t, production, "./cmd/eino-tui")
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
 	workspace := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state")
-	process := startTerminal(t, production, nil, workspace, state)
-	process.waitText(t, "credential-free demo", 3*time.Second)
+	process := startTerminal(t, fixture, nil, workspace, state)
+	process.waitText(t, "Codex subscription", 3*time.Second)
 	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 8, Cols: 18}); err != nil {
 		t.Fatal(err)
 	}
 	process.write(t, "\x1b[200~first\n界 second\x1b[201~")
 	time.Sleep(100 * time.Millisecond)
-	if strings.Contains(process.text(), "Demo response:") {
+	if strings.Contains(process.text(), "Codex fixture response:") {
 		t.Fatal("paste submitted implicitly")
 	}
 	process.write(t, "\r")
-	process.waitText(t, "Demo response:", 3*time.Second)
+	process.waitText(t, "response:", 3*time.Second)
 	time.Sleep(300 * time.Millisecond)
 	process.write(t, "alt one\x1b\ralt two\r")
 	time.Sleep(500 * time.Millisecond)
@@ -311,7 +377,7 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := runtimeui.Open(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical)
+	chat, err := runtimeui.OpenWithResolver(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

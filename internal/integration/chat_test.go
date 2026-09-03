@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -19,7 +20,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	service, err := runtimeui.Open(ctx, paths.Database, id, workspace)
+	service, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 	if err := service.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := runtimeui.Open(ctx, paths.Database, id, workspace)
+	reopened, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	owner, err := runtimeui.OpenWithWait(ctx, paths.Database, id, workspace, demomodel.TimerWait(10*time.Second))
+	owner, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	contender, err := runtimeui.Open(ctx, paths.Database, id, workspace)
+	contender, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +175,46 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 		t.Fatal("terminal recovery did not finish")
 	}
 	if err := contender.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID := session.ID("workspace-v1-legacy-fixture")
+	legacy, err := runtimeui.OpenWithResolver(ctx, paths.Database, legacyID, workspace, demomodel.Resolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := legacy.Start(ctx, "legacy demo prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range started.Run.Finished() {
+	}
+	closeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	if err := legacy.Close(closeCtx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+
+	current, err := runtimeui.OpenWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := current.Load(ctx)
+	if err != nil || len(replay.Messages) != 0 {
+		t.Fatalf("v2 loaded v1 history: %#v, %v", replay, err)
+	}
+	closeCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := current.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
 }

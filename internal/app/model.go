@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -24,9 +25,20 @@ type Model struct {
 	stableWidth      int
 	stableMessages   []runtimeui.Message
 	stableTranscript string
+	display          Config
 }
 
-func New(ctx context.Context, service runtimeui.Service) *Model {
+type Config struct {
+	Provider string
+	Model    string
+}
+
+func New(ctx context.Context, service runtimeui.Service, configs ...Config) *Model {
+	display := Config{Provider: "Codex subscription", Model: "gpt-5.5"}
+	if len(configs) > 0 {
+		display.Provider = safeMetadata(configs[0].Provider, "Codex subscription", 128)
+		display.Model = safeMetadata(configs[0].Model, "unknown model", 256)
+	}
 	input := textarea.New()
 	input.Placeholder = "Type a message…"
 	input.Prompt = "> "
@@ -37,7 +49,15 @@ func New(ctx context.Context, service runtimeui.Service) *Model {
 	input.Focus()
 	view := viewport.New()
 	view.SoftWrap = true
-	return &Model{ctx: ctx, service: service, textarea: input, viewport: view, snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}}
+	return &Model{ctx: ctx, service: service, textarea: input, viewport: view, snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, display: display}
+}
+
+func safeMetadata(value, fallback string, maxBytes int) string {
+	value = textsafe.Display(value)
+	if value == "" || len(value) > maxBytes || strings.ContainsAny(value, "\n\t") {
+		return fallback
+	}
+	return value
 }
 
 func (m *Model) Init() tea.Cmd { return m.loadCmd() }

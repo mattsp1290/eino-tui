@@ -18,7 +18,7 @@ func TestServiceSlowConsumerCannotBlockSettlementOrClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestServiceRejectsConcurrentStartAndSupportsSequentialTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestConcurrentCloseDuringActiveRunIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := OpenWithWait(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.TimerWait(10*time.Second))
+	opened, err := OpenWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}

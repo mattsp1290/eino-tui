@@ -110,7 +110,7 @@ func TestInterruptBeforeAdmissionRetainsNoDurableTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := Open(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
+	opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}

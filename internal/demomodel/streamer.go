@@ -36,6 +36,11 @@ func (s pacedStreamer) StreamProvider(ctx context.Context, request model.Request
 				writer.Send(model.StreamDelta{}, waitErr)
 				return
 			}
+			// eino-agent v0.3.1 treats all Eino Extra fields as provider-private.
+			// Deterministic fixtures have no private state, so discard fake metadata.
+			if delta.Message != nil {
+				delta.Message.Extra = nil
+			}
 			if writer.Send(delta, nil) {
 				return
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/mattsp1290/eino-agent/composition"
@@ -13,26 +14,51 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-agent/stream"
-	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
+	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
-// Open builds the production in-process runtime around the protected SQLite database.
-func Open(ctx context.Context, database string, sessionID session.ID, workspace string) (Service, error) {
-	return open(ctx, database, sessionID, workspace, demomodel.Resolver(nil))
+type DisplayMetadata struct {
+	Provider string
+	Model    string
 }
 
-// OpenWithWait is an injection seam used only by the repository's PTY fixture.
-func OpenWithWait(ctx context.Context, database string, sessionID session.ID, workspace string, wait demomodel.Waiter) (Service, error) {
-	return open(ctx, database, sessionID, workspace, demomodel.Resolver(wait))
+type Config struct {
+	Resolver     model.Resolver
+	Selection    model.Selection
+	AgentName    string
+	SystemPrompt string
+	Display      DisplayMetadata
 }
 
-// OpenWithResolver is an injection seam used only by repository integration fixtures.
+// Open builds the in-process runtime around the protected SQLite database.
+func Open(ctx context.Context, database string, sessionID session.ID, workspace string, cfg Config) (Service, error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return open(ctx, database, sessionID, workspace, cfg)
+}
+
+// OpenWithResolver is an injection seam used only by repository-owned fixtures.
 func OpenWithResolver(ctx context.Context, database string, sessionID session.ID, workspace string, resolver model.Resolver) (Service, error) {
-	return open(ctx, database, sessionID, workspace, resolver)
+	return Open(ctx, database, sessionID, workspace, Config{
+		Resolver: resolver, Selection: model.Selection{ProviderID: "demo", ModelID: "scripted-v1"},
+		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
+		Display: DisplayMetadata{Provider: "Codex", Model: "fixture"},
+	})
 }
 
-func open(ctx context.Context, database string, sessionID session.ID, workspace string, resolver model.Resolver) (Service, error) {
+func validateConfig(cfg Config) error {
+	if cfg.Resolver == nil || cfg.Selection.ProviderID == "" || cfg.Selection.ModelID == "" || cfg.Selection.Variant != "" ||
+		cfg.AgentName == "" || cfg.SystemPrompt == "" || cfg.Display.Provider == "" || cfg.Display.Model == "" ||
+		len(cfg.Display.Provider) > 128 || len(cfg.Display.Model) > 256 || strings.ContainsAny(cfg.Display.Provider+cfg.Display.Model, "\n\t") ||
+		textsafe.Display(cfg.Display.Provider) != cfg.Display.Provider || textsafe.Display(cfg.Display.Model) != cfg.Display.Model {
+		return fmt.Errorf("build runtime: invalid configuration")
+	}
+	return nil
+}
+
+func open(ctx context.Context, database string, sessionID session.ID, workspace string, cfg Config) (Service, error) {
 	store, err := sqlite.Open(ctx, sqliteDSN(database))
 	if err != nil {
 		return nil, fmt.Errorf("open durable store: %w", err)
@@ -44,14 +70,13 @@ func open(ctx context.Context, database string, sessionID session.ID, workspace 
 		_ = store.Close()
 		return nil, fmt.Errorf("build runtime: %w", err)
 	}
-	selection := model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID}
 	snapshot := config.Snapshot{
-		Agent:    config.Agent{Name: "demo", SystemPrompt: "Return only the configured scripted demo response.", Model: selection},
-		Model:    selection,
+		Agent:    config.Agent{Name: cfg.AgentName, SystemPrompt: cfg.SystemPrompt, Model: cfg.Selection},
+		Model:    cfg.Selection,
 		Metadata: map[string]string{"workspace_id": string(sessionID), "workspace_root": workspace},
 	}
 	orchestrator, err := agentruntime.NewStreamingOrchestrator(
-		agentruntime.WithStore(store), agentruntime.WithModelResolver(resolver),
+		agentruntime.WithStore(store), agentruntime.WithModelResolver(cfg.Resolver),
 		agentruntime.WithEventSink(tail), agentruntime.WithIDGenerator(platform.IDs{}),
 		agentruntime.WithRunPlanProvider(plans), agentruntime.WithOwnerID("eino-tui-"+string(platform.IDs{}.NewEventID())),
 		agentruntime.WithQueueSize(16), agentruntime.WithLease(5*time.Second),

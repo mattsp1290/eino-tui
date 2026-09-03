@@ -112,7 +112,7 @@ func TestViewIsSemanticAtNarrowWidth(t *testing.T) {
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "界é\tשלום"}, {Role: runtimeui.RoleAssistant, Content: strings.Repeat("x", 100)}}}
 	model.resize(8, 6)
 	view := model.View()
-	if !view.AltScreen || !strings.Contains(view.Content, "credential-free demo") {
+	if !view.AltScreen || !strings.Contains(view.Content, "Codex subscription") {
 		t.Fatalf("view = %#v", view)
 	}
 }
