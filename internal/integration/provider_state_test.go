@@ -38,6 +38,19 @@ type failureThenSuccessTransport struct {
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+type panickingCodexBody struct {
+	closed chan struct{}
+}
+
+func (*panickingCodexBody) Read([]byte) (int, error) {
+	panic("TOKEN /tmp/private provider body panic")
+}
+
+func (b *panickingCodexBody) Close() error {
+	close(b.closed)
+	return nil
+}
+
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
 }
@@ -268,10 +281,12 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 	sseResponse := func(body string) *http.Response {
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
 	}
+	panicBody := &panickingCodexBody{closed: make(chan struct{})}
 	tests := []struct {
 		name      string
 		transport http.RoundTripper
 		want      string
+		after     func(*testing.T)
 	}{
 		{
 			name: "quota",
@@ -301,6 +316,21 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 			}),
 			want: runtimeui.NoticeProviderFailed,
 		},
+		{
+			name: "response body panic",
+			transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: panicBody}, nil
+			}),
+			want: runtimeui.NoticeProviderFailed,
+			after: func(t *testing.T) {
+				t.Helper()
+				select {
+				case <-panicBody.closed:
+				default:
+					t.Fatal("panicking provider response body was not closed")
+				}
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -327,12 +357,16 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 			}
 			closeRuntime(t, service)
 			assertDurableSecretsAbsent(t, paths.Database, "TOKEN", "/tmp/private", "leak")
+			if test.after != nil {
+				test.after(t)
+			}
 		})
 	}
 }
 
 func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T) {
 	const (
+		transient  = "SECRET_TRANSIENT_PROVIDER_TEXT"
 		secretName = "SECRET_PROVIDER_TOOL_NAME"
 		secretArgs = "SECRET_PROVIDER_TOOL_ARGS"
 	)
@@ -344,6 +378,7 @@ func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T)
 	}
 	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		stream := strings.Join([]string{
+			`data: {"type":"response.output_text.delta","delta":"` + transient + `"}`,
 			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":""}}`,
 			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"value\":\"` + secretArgs + `\"}"}`,
 			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":"{\"value\":\"` + secretArgs + `\"}"}}`,
@@ -375,7 +410,23 @@ func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T)
 	if toolCalls != 0 {
 		t.Fatalf("provider-controlled response created %d durable tool calls", toolCalls)
 	}
-	assertDurableSecretsAbsent(t, paths.Database, secretName, secretArgs, "call_secret")
+	var assistantPlaceholders int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE run_id = ? AND role = 'assistant'`, terminal.RunID).Scan(&assistantPlaceholders); err != nil {
+		t.Fatal(err)
+	}
+	// Failed runs retain one content-free assistant placeholder as a recovery
+	// anchor; terminal projection hides it and no streamed content may be stored.
+	if assistantPlaceholders != 1 {
+		t.Fatalf("rejected provider response left %d durable assistant placeholders", assistantPlaceholders)
+	}
+	var assistantParts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p JOIN messages m ON m.id = p.message_id WHERE m.run_id = ? AND m.role = 'assistant'`, terminal.RunID).Scan(&assistantParts); err != nil {
+		t.Fatal(err)
+	}
+	if assistantParts != 0 {
+		t.Fatalf("rejected provider response left %d durable assistant parts", assistantParts)
+	}
+	assertDurableSecretsAbsent(t, paths.Database, transient, secretName, secretArgs, "call_secret")
 }
 
 func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
