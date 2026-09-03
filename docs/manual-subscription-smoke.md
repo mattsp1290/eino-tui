@@ -22,11 +22,11 @@ Record only these fields:
 
 ```text
 result: pass
-binary commit: 7732fd599ac6e8a7f99bd3472b65a23c950b6b0a-dirty
+binary commit: 918a46a786c42f6b7baff95010efb0f790bd09e1
 eino-providers version: v0.0.0-20260606014731-3e0069d028bc
 model: gpt-5.5
 os: macOS 26.6.2 arm64
-completed at: 2026-09-03T04:08:11Z
+completed at: 2026-09-03T15:32:42Z
 ```
 
 Do not record credentials, account identifiers, authorization codes, credential paths, prompts, responses, or PTY transcripts.
