@@ -89,7 +89,7 @@ func TestConcurrentCloseDuringActiveRunIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := OpenWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
+	opened, err := openFixtureWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,10 +3,18 @@ package runtimeui
 import (
 	"context"
 
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 )
 
 func openFixture(ctx context.Context, database string, sessionID session.ID, workspace string) (Service, error) {
-	return OpenWithResolver(ctx, database, sessionID, workspace, demomodel.Resolver(nil))
+	return openFixtureWithResolver(ctx, database, sessionID, workspace, demomodel.Resolver(nil))
+}
+
+func openFixtureWithResolver(ctx context.Context, database string, sessionID session.ID, workspace string, resolver model.Resolver) (Service, error) {
+	return Open(ctx, database, sessionID, workspace, Config{
+		Resolver: resolver, Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
+	})
 }

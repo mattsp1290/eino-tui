@@ -87,7 +87,6 @@ const (
 	NoticePlanUnavailable = "Your ChatGPT plan does not include Codex access."
 	NoticeQuotaExceeded   = "Your Codex quota is exhausted. Try again later."
 	NoticeProviderFailed  = "The Codex provider could not complete the response."
-	NoticeFailed          = NoticeProviderFailed
 	NoticeUnavailable     = "Conversation history is temporarily unavailable."
 	NoticeHistoryOmitted  = "Older durable messages are omitted from this view."
 )

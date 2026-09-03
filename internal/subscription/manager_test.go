@@ -69,15 +69,13 @@ func TestManagerHTTPClientCategories(t *testing.T) {
 }
 
 func TestNewOwnsLoggerStoreAndDeviceOutput(t *testing.T) {
-	original := authClientFactory
-	t.Cleanup(func() { authClientFactory = original })
+	t.Parallel()
 	var options codexauth.Options
-	authClientFactory = func(got codexauth.Options) authClient {
+	var output bytes.Buffer
+	_ = newWithFactory(&output, func(got codexauth.Options) authClient {
 		options = got
 		return &fakeAuthClient{}
-	}
-	var output bytes.Buffer
-	_ = New(&output)
+	})
 	if options.AppName != codexmodel.AppName || options.Logger == nil || options.Endpoint != "" || options.CredentialPath != "" || options.DevicePrompt == nil {
 		t.Fatalf("unsafe options: %#v", options)
 	}

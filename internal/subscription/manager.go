@@ -36,19 +36,23 @@ type authClient interface {
 
 type Manager struct{ client authClient }
 
-var authClientFactory = func(options codexauth.Options) authClient {
-	return codexauth.NewClient(options)
-}
+type clientFactory func(codexauth.Options) authClient
 
 var deviceCodePattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
 // New constructs the app-owned credential client with fully owned output sinks.
 func New(deviceOutput io.Writer) *Manager {
+	return newWithFactory(deviceOutput, func(options codexauth.Options) authClient {
+		return codexauth.NewClient(options)
+	})
+}
+
+func newWithFactory(deviceOutput io.Writer, factory clientFactory) *Manager {
 	if deviceOutput == nil {
 		deviceOutput = io.Discard
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	client := authClientFactory(codexauth.Options{
+	client := factory(codexauth.Options{
 		AppName: codexmodel.AppName,
 		Logger:  logger,
 		DevicePrompt: func(uri, code string) error {

@@ -31,14 +31,6 @@ func Open(ctx context.Context, database string, sessionID session.ID, workspace 
 	return open(ctx, database, sessionID, workspace, cfg)
 }
 
-// OpenWithResolver is an injection seam used only by repository-owned fixtures.
-func OpenWithResolver(ctx context.Context, database string, sessionID session.ID, workspace string, resolver model.Resolver) (Service, error) {
-	return Open(ctx, database, sessionID, workspace, Config{
-		Resolver: resolver, Selection: model.Selection{ProviderID: "demo", ModelID: "scripted-v1"},
-		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
-	})
-}
-
 func validateConfig(cfg Config) error {
 	if cfg.Resolver == nil || cfg.Selection.ProviderID == "" || cfg.Selection.ModelID == "" || cfg.Selection.Variant != "" ||
 		cfg.AgentName == "" || cfg.SystemPrompt == "" {

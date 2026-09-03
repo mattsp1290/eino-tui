@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/app"
 	"github.com/mattsp1290/eino-tui/internal/cli"
@@ -21,6 +22,13 @@ import (
 type fixtureSubscription struct {
 	output io.Writer
 	status subscription.Status
+}
+
+func openFixture(ctx context.Context, database string, id session.ID, workspace string, resolver model.Resolver) (runtimeui.Service, error) {
+	return runtimeui.Open(ctx, database, id, workspace, runtimeui.Config{
+		Resolver: resolver, Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
+	})
 }
 
 func (s fixtureSubscription) LoginDevice(context.Context) error {
@@ -82,7 +90,7 @@ func main() {
 		return fixtureSubscription{output: output, status: subscription.LoggedIn}
 	}
 	deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-		return runtimeui.OpenWithResolver(ctx, db, id, workspace, demomodel.Resolver(nil))
+		return openFixture(ctx, db, id, workspace, demomodel.Resolver(nil))
 	}
 	switch mode {
 	case "--logged-out":
@@ -91,7 +99,7 @@ func main() {
 		}
 	case "--long":
 		deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-			return runtimeui.OpenWithResolver(ctx, db, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
+			return openFixture(ctx, db, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
 		}
 	case "--program-panic":
 		deps.NewProgram = func(tea.Model, context.Context, io.Reader, io.Writer) cli.Program { return panicProgram{} }
@@ -105,7 +113,7 @@ func main() {
 		}
 	case "--model-error":
 		deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-			return runtimeui.OpenWithResolver(ctx, db, id, workspace, demomodel.ErrorResolver(func(context.Context) error { return nil }, errors.New("secret prompt /tmp/private\x1b]0;leak\a")))
+			return openFixture(ctx, db, id, workspace, demomodel.ErrorResolver(func(context.Context) error { return nil }, errors.New("secret prompt /tmp/private\x1b]0;leak\a")))
 		}
 	case "--app-init-panic", "--app-update-panic", "--app-view-panic", "--app-command-panic":
 		where := map[string]string{"--app-init-panic": "init", "--app-update-panic": "update", "--app-view-panic": "view", "--app-command-panic": "command"}[mode]

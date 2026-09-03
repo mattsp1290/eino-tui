@@ -6,11 +6,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 )
+
+func openDemoFixture(ctx context.Context, database string, id session.ID, workspace string, resolver model.Resolver) (runtimeui.Service, error) {
+	return runtimeui.Open(ctx, database, id, workspace, runtimeui.Config{
+		Resolver: resolver, Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
+	})
+}
 
 func TestProductionWiringDurableJourney(t *testing.T) {
 	ctx := context.Background()
@@ -20,7 +28,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	service, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	service, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +59,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 	if err := service.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	reopened, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +92,7 @@ func TestBackpressuredConsumerReceivesAuthoritativeTerminalReplay(t *testing.T) 
 			return nil
 		}
 	}
-	service, err := runtimeui.OpenWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.ScriptedResolver(waiter, chunks))
+	service, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.ScriptedResolver(waiter, chunks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +138,7 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	owner, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
+	owner, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +146,7 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	contender, err := runtimeui.OpenWithResolver(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	contender, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +195,7 @@ func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyID := session.ID("workspace-v1-legacy-fixture")
-	legacy, err := runtimeui.OpenWithResolver(ctx, paths.Database, legacyID, workspace, demomodel.Resolver(nil))
+	legacy, err := openDemoFixture(ctx, paths.Database, legacyID, workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +212,7 @@ func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
 	}
 	cancel()
 
-	current, err := runtimeui.OpenWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(nil))
+	current, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

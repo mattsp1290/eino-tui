@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -377,7 +378,10 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := runtimeui.OpenWithResolver(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, demomodel.Resolver(nil))
+	chat, err := runtimeui.Open(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, runtimeui.Config{
+		Resolver: demomodel.Resolver(nil), Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
