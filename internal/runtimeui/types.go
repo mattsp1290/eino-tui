@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
 )
 
@@ -65,9 +66,15 @@ type ActionResult struct {
 	Snapshot Snapshot
 }
 
+// StartConfig is the model choice frozen for the next admitted turn.
+type StartConfig struct {
+	Selection       model.Selection
+	ReasoningEffort string
+}
+
 type Service interface {
 	Load(context.Context) (Snapshot, error)
-	Start(context.Context, string) (ActionResult, error)
+	Start(context.Context, string, StartConfig) (ActionResult, error)
 	InterruptActive(context.Context) error
 	Recover(context.Context) (ActionResult, error)
 	Close(context.Context) error
@@ -76,6 +83,7 @@ type Service interface {
 var (
 	ErrBusy          = errors.New("chat is busy")
 	ErrInvalidPrompt = errors.New("invalid prompt")
+	ErrInvalidConfig = errors.New("invalid run configuration")
 	ErrClosing       = errors.New("chat is closing")
 	ErrUnavailable   = errors.New("chat is unavailable")
 	ErrCloseTimeout  = errors.New("chat shutdown timed out")

@@ -6,14 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 )
 
 func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "must-not-exist.db")
 	valid := Config{
-		Resolver: demomodel.Resolver(nil), Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		Resolver:  demomodel.Resolver(nil),
 		AgentName: "fixture", SystemPrompt: "test",
 	}
 	tests := []struct {
@@ -21,9 +20,6 @@ func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 		edit func(*Config)
 	}{
 		{name: "resolver", edit: func(c *Config) { c.Resolver = nil }},
-		{name: "provider", edit: func(c *Config) { c.Selection.ProviderID = "" }},
-		{name: "model", edit: func(c *Config) { c.Selection.ModelID = "" }},
-		{name: "variant", edit: func(c *Config) { c.Selection.Variant = "mutable" }},
 		{name: "agent", edit: func(c *Config) { c.AgentName = "" }},
 		{name: "prompt", edit: func(c *Config) { c.SystemPrompt = "" }},
 	}

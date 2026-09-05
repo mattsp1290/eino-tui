@@ -25,7 +25,7 @@ func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 	if err != nil || len(loaded.Messages) != 0 {
 		t.Fatalf("initial load = %#v, %v", loaded, err)
 	}
-	result, err := service.Start(ctx, "hello λ\nsecond line")
+	result, err := service.Start(ctx, "hello λ\nsecond line", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestServiceInterruptKeepsAdmittedUserAndOmitsEmptyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Start(ctx, "interrupt me")
+	result, err := service.Start(ctx, "interrupt me", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

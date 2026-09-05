@@ -17,7 +17,7 @@ import (
 	"github.com/mattsp1290/eino-tui/internal/subscription"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 const (
 	ExitOK             = 0
@@ -37,7 +37,7 @@ const (
 	loginDiagnostic   = "eino-tui device login failed"
 	loginInterrupted  = "eino-tui device login interrupted"
 	notLoggedIn       = "eino-tui is not logged in; run `eino-tui login`"
-	usageText         = "Usage: eino-tui [--model <model>]\n       eino-tui login\n       eino-tui status\n       eino-tui --help\n       eino-tui --version"
+	usageText         = "Usage: eino-tui [--model <startup-model>]\n       eino-tui login\n       eino-tui status\n       eino-tui --help\n       eino-tui --version\n\nIn chat, press Alt+M to choose a model and reasoning effort for later turns."
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps Dependencies) (code int) {
@@ -143,14 +143,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	resolver, err := deps.NewResolver(commandCtx, httpClient, options.Model)
+	resolver, err := deps.NewResolver(httpClient)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
 	runtimeConfig := runtimeui.Config{
 		Resolver:     resolver,
-		Selection:    modelSelection(options.Model),
 		AgentName:    "codex",
 		SystemPrompt: "Be a helpful, tool-free conversational assistant. Do not claim filesystem or shell access.",
 	}
@@ -159,7 +158,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{Provider: "Codex subscription", Model: options.Model})
+	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{
+		Catalog: manager, InitialSelection: modelSelection(options.Model), InitialReasoningEffort: codexmodel.ReasoningEffortMedium,
+	})
 	program = deps.NewProgram(model, commandCtx, stdin, stdout)
 	if program == nil {
 		panic("nil program")

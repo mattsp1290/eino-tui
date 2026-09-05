@@ -16,6 +16,7 @@ import (
 
 	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
+	agentsqlite "github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -125,7 +126,7 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	sessionID := platform.WorkspaceSessionID(workspace)
 
 	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, httpClient)
-	first, err := service.Start(ctx, "first prompt")
+	first, err := service.Start(ctx, "first prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortLow))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,10 +135,49 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	if len(firstTerminal.Messages) != 2 || firstTerminal.Messages[1].Content != "first answer" {
 		t.Fatalf("turn one snapshot = %#v", firstTerminal)
 	}
+	var firstPayload struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(transport.request(0), &firstPayload); err != nil || firstPayload.Reasoning.Effort != codexmodel.ReasoningEffortLow {
+		t.Fatalf("turn one reasoning=%q err=%v", firstPayload.Reasoning.Effort, err)
+	}
 	closeRuntime(t, service)
+	store, err := agentsqlite.Open(ctx, paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBatch, err := store.ListModelRequests(ctx, firstTerminal.RunID, session.ModelRequestCursor{Limit: 10})
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if len(requestBatch.Records) != 1 {
+		store.Close()
+		t.Fatalf("model request records=%d", len(requestBatch.Records))
+	}
+	var safeConfig map[string]string
+	if err := json.Unmarshal(requestBatch.Records[0].SafeCallConfig, &safeConfig); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if len(safeConfig) != 1 || safeConfig[codexmodel.ReasoningEffortOptionKey] != codexmodel.ReasoningEffortLow {
+		store.Close()
+		t.Fatalf("safe call config=%s", requestBatch.Records[0].SafeCallConfig)
+	}
+	for _, forbidden := range []string{codexmodel.DefaultModel, "first prompt", "REASON_SECRET", "TOKEN"} {
+		if strings.Contains(string(requestBatch.Records[0].SafeCallConfig), forbidden) {
+			store.Close()
+			t.Fatalf("safe call config retained %q: %s", forbidden, requestBatch.Records[0].SafeCallConfig)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, httpClient)
-	second, err := reopened.Start(ctx, "second prompt")
+	second, err := reopened.Start(ctx, "second prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortHigh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,13 +189,16 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 
 	request := transport.request(1)
 	var payload struct {
-		Input []json.RawMessage `json:"input"`
-		Tools []json.RawMessage `json:"tools"`
+		Input     []json.RawMessage `json:"input"`
+		Tools     []json.RawMessage `json:"tools"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
 	}
 	if err := json.Unmarshal(request, &payload); err != nil {
 		t.Fatalf("decode second request: %v", err)
 	}
-	if len(payload.Tools) != 0 {
+	if len(payload.Tools) != 0 || payload.Reasoning.Effort != codexmodel.ReasoningEffortHigh {
 		t.Fatalf("Codex request registered tools: %s", request)
 	}
 	var restored []string
@@ -188,7 +231,7 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 	sessionID := platform.WorkspaceSessionID(workspace)
 
 	first := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, codexmodel.DefaultModel)
-	started, err := first.Start(ctx, "seed cross-model state")
+	started, err := first.Start(ctx, "seed cross-model state", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortLow))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +240,7 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 
 	const nextModel = "gpt-5.6"
 	reopened := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, nextModel)
-	continued, err := reopened.Start(ctx, "continue with compatible model")
+	continued, err := reopened.Start(ctx, "continue with compatible model", codexStartConfig(nextModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +251,11 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 
 	request := transport.request(1)
 	var payload struct {
-		Model string            `json:"model"`
-		Input []json.RawMessage `json:"input"`
+		Model     string            `json:"model"`
+		Input     []json.RawMessage `json:"input"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
 	}
 	if err := json.Unmarshal(request, &payload); err != nil {
 		t.Fatal(err)
@@ -226,10 +272,33 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 			restored = append(restored, string(item))
 		}
 	}
-	if payload.Model != nextModel || len(restored) != 2 || restored[0] != reasoningOne || restored[1] != reasoningTwo {
+	if payload.Model != nextModel || payload.Reasoning.Effort != codexmodel.ReasoningEffortMedium || len(restored) != 2 || restored[0] != reasoningOne || restored[1] != reasoningTwo {
 		t.Fatalf("model=%q restored=%#v", payload.Model, restored)
 	}
 	closeRuntime(t, reopened)
+}
+
+func TestInvalidCodexTurnConfigurationPerformsNoProviderIO(t *testing.T) {
+	ctx := context.Background()
+	workspace := t.TempDir()
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &recordingCodexTransport{}
+	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	for _, cfg := range []runtimeui.StartConfig{
+		codexStartConfig("bad model", codexmodel.ReasoningEffortMedium),
+		codexStartConfig(codexmodel.DefaultModel, "xhigh"),
+	} {
+		if _, err := service.Start(ctx, "must not dispatch", cfg); !errors.Is(err, runtimeui.ErrInvalidConfig) {
+			t.Fatalf("invalid config error=%v", err)
+		}
+	}
+	if transport.count() != 0 {
+		t.Fatalf("invalid configurations dispatched %d requests", transport.count())
+	}
+	closeRuntime(t, service)
 }
 
 func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
@@ -243,7 +312,7 @@ func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 	client := &http.Client{Transport: &failureThenSuccessTransport{}}
 	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
 
-	failed, err := service.Start(ctx, "failed prompt")
+	failed, err := service.Start(ctx, "failed prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +327,7 @@ func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 		}
 	}
 
-	recovered, err := service.Start(ctx, "retry prompt")
+	recovered, err := service.Start(ctx, "retry prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +410,7 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 				t.Fatal(err)
 			}
 			service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: test.transport})
-			started, err := service.Start(ctx, "safe provider error prompt")
+			started, err := service.Start(ctx, "safe provider error prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -388,7 +457,7 @@ func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T)
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}, nil
 	})
 	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
-	started, err := service.Start(ctx, "do not execute provider tools")
+	started, err := service.Start(ctx, "do not execute provider tools", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +518,7 @@ func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := service.Start(ctx, "atomic persistence prompt")
+	started, err := service.Start(ctx, "atomic persistence prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +547,7 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 	client := &http.Client{Transport: transport}
 	sessionID := platform.WorkspaceSessionID(workspace)
 	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
-	started, err := service.Start(ctx, "seed provider state")
+	started, err := service.Start(ctx, "seed provider state", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +587,7 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 	}
 
 	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
-	if _, err := reopened.Start(ctx, "must not dispatch"); err == nil {
+	if _, err := reopened.Start(ctx, "must not dispatch", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium)); err == nil {
 		t.Fatal("corrupt provider state was accepted")
 	}
 	if transport.count() != 1 {
@@ -532,21 +601,27 @@ func openCodexFixture(t *testing.T, ctx context.Context, database string, sessio
 	return openCodexFixtureModel(t, ctx, database, sessionID, workspace, client, codexmodel.DefaultModel)
 }
 
-func openCodexFixtureModel(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client, modelID string) runtimeui.Service {
+func openCodexFixtureModel(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client, _ string) runtimeui.Service {
 	t.Helper()
-	resolver, err := codexmodel.NewResolver(ctx, client, modelID)
+	resolver, err := codexmodel.NewResolver(client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := runtimeui.Open(ctx, database, sessionID, workspace, runtimeui.Config{
 		Resolver:  resolver,
-		Selection: model.Selection{ProviderID: codexmodel.ProviderID, ModelID: model.ID(modelID)},
 		AgentName: "codex", SystemPrompt: "Be helpful and use no tools.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return service
+}
+
+func codexStartConfig(modelID, effort string) runtimeui.StartConfig {
+	return runtimeui.StartConfig{
+		Selection:       model.Selection{ProviderID: codexmodel.ProviderID, ModelID: model.ID(modelID)},
+		ReasoningEffort: effort,
+	}
 }
 
 func assertDurableSecretsAbsent(t *testing.T, database string, secrets ...string) {

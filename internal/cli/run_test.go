@@ -27,9 +27,10 @@ type testSubscription struct {
 }
 
 type scriptedSubscription struct {
-	login  func(context.Context) error
-	status func(context.Context) (subscription.Status, error)
-	http   func(context.Context) (*http.Client, error)
+	login   func(context.Context) error
+	status  func(context.Context) (subscription.Status, error)
+	http    func(context.Context) (*http.Client, error)
+	catalog func(context.Context) ([]codexmodel.CatalogEntry, error)
 }
 
 func (s scriptedSubscription) LoginDevice(ctx context.Context) error { return s.login(ctx) }
@@ -39,6 +40,12 @@ func (s scriptedSubscription) Status(ctx context.Context) (subscription.Status, 
 func (s scriptedSubscription) HTTPClient(ctx context.Context) (*http.Client, error) {
 	return s.http(ctx)
 }
+func (s scriptedSubscription) ListModels(ctx context.Context) ([]codexmodel.CatalogEntry, error) {
+	if s.catalog == nil {
+		return nil, nil
+	}
+	return s.catalog(ctx)
+}
 
 func (s testSubscription) LoginDevice(context.Context) error { return nil }
 func (s testSubscription) Status(context.Context) (subscription.Status, error) {
@@ -46,6 +53,9 @@ func (s testSubscription) Status(context.Context) (subscription.Status, error) {
 }
 func (testSubscription) HTTPClient(context.Context) (*http.Client, error) {
 	return &http.Client{}, nil
+}
+func (testSubscription) ListModels(context.Context) ([]codexmodel.CatalogEntry, error) {
+	return nil, nil
 }
 
 type testProgram struct {
@@ -77,7 +87,7 @@ type testService struct {
 func (*testService) Load(context.Context) (runtimeui.Snapshot, error) {
 	return runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, nil
 }
-func (*testService) Start(context.Context, string) (runtimeui.ActionResult, error) {
+func (*testService) Start(context.Context, string, runtimeui.StartConfig) (runtimeui.ActionResult, error) {
 	return runtimeui.ActionResult{}, nil
 }
 func (*testService) InterruptActive(context.Context) error { return nil }
@@ -349,6 +359,10 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 				},
 				http:  func(context.Context) (*http.Client, error) { calls = append(calls, "http"); return client, nil },
 				login: func(context.Context) error { panic("login") },
+				catalog: func(context.Context) ([]codexmodel.CatalogEntry, error) {
+					t.Fatal("catalog loaded during startup")
+					return nil, nil
+				},
 			}
 		},
 		WorkingDirectory: func() (string, error) { calls = append(calls, "cwd"); return root, nil },
@@ -357,12 +371,12 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 			calls = append(calls, "prepare")
 			return platform.PrepareState(ctx, path)
 		},
-		NewResolver: func(ctx context.Context, got *http.Client, modelID string) (agentmodel.Resolver, error) {
+		NewResolver: func(got *http.Client) (agentmodel.Resolver, error) {
 			calls = append(calls, "resolver")
-			if got != client || modelID != "gpt-5.6" {
-				t.Fatalf("resolver input = %p %q", got, modelID)
+			if got != client {
+				t.Fatalf("resolver input = %p", got)
 			}
-			return codexmodel.NewResolver(ctx, got, modelID)
+			return codexmodel.NewResolver(got)
 		},
 		OpenService: func(_ context.Context, _ string, _ session.ID, _ string, cfg runtimeui.Config) (runtimeui.Service, error) {
 			calls = append(calls, "open")
@@ -371,7 +385,8 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 		},
 		NewApplication: func(ctx context.Context, got runtimeui.Service, cancel context.CancelFunc, cfg app.Config) (tea.Model, *app.Fatal) {
 			calls = append(calls, "app")
-			if got != service || cfg.Model != "gpt-5.6" || cfg.Provider != "Codex subscription" {
+			if got != service || cfg.InitialSelection.ModelID != "gpt-5.6" || cfg.InitialSelection.ProviderID != codexmodel.ProviderID ||
+				cfg.InitialReasoningEffort != codexmodel.ReasoningEffortMedium || cfg.Catalog == nil {
 				t.Fatalf("application inputs = %T %#v", got, cfg)
 			}
 			return app.Safe(app.New(ctx, got, cfg), cancel)
@@ -388,7 +403,7 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want=%v", calls, want)
 	}
-	if captured.Selection.ProviderID != codexmodel.ProviderID || captured.Selection.ModelID != "gpt-5.6" || captured.AgentName != "codex" {
+	if captured.AgentName != "codex" {
 		t.Fatalf("runtime config = %#v", captured)
 	}
 }

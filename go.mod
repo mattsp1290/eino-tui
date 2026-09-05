@@ -1,6 +1,6 @@
 module github.com/mattsp1290/eino-tui
 
-go 1.26.3
+go 1.26.8
 
 require (
 	charm.land/bubbles/v2 v2.2.1
@@ -10,7 +10,7 @@ require (
 	github.com/cloudwego/eino v0.8.13
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
-	github.com/mattsp1290/codex-auth-go v0.3.0
+	github.com/mattsp1290/codex-auth-go v0.4.0
 	github.com/mattsp1290/eino-agent v0.3.2
 	github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b
 )

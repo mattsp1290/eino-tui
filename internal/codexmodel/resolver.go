@@ -12,6 +12,7 @@ import (
 
 const (
 	ReasoningExtraKey         = "openaicodex:reasoning_items"
+	ReasoningEffortOptionKey  = "openaicodex.reasoning_effort"
 	ReasoningCodecID          = "github.com/mattsp1290/eino-providers/openaicodex/reasoning-items"
 	ReasoningCodecVersion     = 1
 	ReasoningCompatibilityKey = "openaicodex-responses-reasoning-v1"
@@ -30,23 +31,19 @@ func reasoningLimits() agentmodel.ProviderStateLimits {
 type chatModelFactory func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error)
 
 type resolver struct {
-	modelID  agentmodel.ID
-	streamer agentmodel.Streamer
+	client  *http.Client
+	factory chatModelFactory
+	codec   agentmodel.ProviderStateCodec
 }
 
-// NewResolver builds the single immutable Codex provider resolver.
-func NewResolver(ctx context.Context, client *http.Client, modelID string) (agentmodel.Resolver, error) {
-	return newResolver(ctx, client, modelID, openaicodex.NewChatModelWithHTTPClient)
+// NewResolver builds a resolver that creates one immutable provider model per run.
+func NewResolver(client *http.Client) (agentmodel.Resolver, error) {
+	return newResolver(client, openaicodex.NewChatModelWithHTTPClient)
 }
 
-func newResolver(ctx context.Context, client *http.Client, modelID string, factory chatModelFactory) (agentmodel.Resolver, error) {
-	if client == nil || factory == nil || ValidateModel(modelID) != nil {
+func newResolver(client *http.Client, factory chatModelFactory) (agentmodel.Resolver, error) {
+	if client == nil || factory == nil {
 		return nil, fmt.Errorf("construct Codex model: %w", ErrInvalidModel)
-	}
-	modelIDValue := agentmodel.ID(modelID)
-	providerClient, err := factory(ctx, client, openaicodex.ChatModelConfig{Model: modelID, ReasoningEffort: "medium"})
-	if err != nil {
-		return nil, fmt.Errorf("construct Codex provider: %w", err)
 	}
 	codec, err := agentmodel.NewEinoJSONExtraStateCodec(agentmodel.EinoJSONExtraStateConfig{
 		ExtraKey: ReasoningExtraKey,
@@ -58,21 +55,28 @@ func newResolver(ctx context.Context, client *http.Client, modelID string, facto
 	if err != nil {
 		return nil, fmt.Errorf("construct Codex state codec: %w", err)
 	}
-	streamer, err := agentmodel.NewEinoStreamerWithProviderState(providerClient, codec)
-	if err != nil {
-		return nil, fmt.Errorf("construct Codex streamer: %w", err)
-	}
-	return &resolver{modelID: modelIDValue, streamer: newSafeProviderStateStreamer(streamer)}, nil
+	return &resolver{client: client, factory: factory, codec: codec}, nil
 }
 
-func (r *resolver) Resolve(_ context.Context, selection agentmodel.Selection, _ agentmodel.Runtime) (agentmodel.Resolved, error) {
-	if r == nil || r.streamer == nil || selection.ProviderID != ProviderID || selection.ModelID != r.modelID || selection.Variant != "" {
+func (r *resolver) Resolve(ctx context.Context, selection agentmodel.Selection, runtime agentmodel.Runtime) (agentmodel.Resolved, error) {
+	effort, hasEffort := runtime.Options[ReasoningEffortOptionKey]
+	if r == nil || r.client == nil || r.factory == nil || r.codec == nil || selection.ProviderID != ProviderID ||
+		ValidateCatalogModelID(string(selection.ModelID)) != nil || selection.Variant != "" || !hasEffort ||
+		len(runtime.Options) != 1 || !ValidReasoningEffort(effort) {
 		return agentmodel.Resolved{}, fmt.Errorf("resolve Codex model: %w", ErrInvalidModel)
+	}
+	providerClient, err := r.factory(ctx, r.client, openaicodex.ChatModelConfig{Model: string(selection.ModelID), ReasoningEffort: effort})
+	if err != nil || providerClient == nil {
+		return agentmodel.Resolved{}, fmt.Errorf("resolve Codex model: provider unavailable")
+	}
+	streamer, err := agentmodel.NewEinoStreamerWithProviderState(providerClient, r.codec)
+	if err != nil {
+		return agentmodel.Resolved{}, fmt.Errorf("resolve Codex model: provider unavailable")
 	}
 	provider := agentmodel.Provider{ID: ProviderID, Name: "OpenAI Codex", Source: "eino-providers/openaicodex"}
 	descriptor := agentmodel.Descriptor{
-		ID: r.modelID, ProviderID: ProviderID, Name: string(r.modelID), Family: "gpt",
-		Capabilities: map[string]bool{"streaming": true},
+		ID: selection.ModelID, ProviderID: ProviderID, Name: string(selection.ModelID), Family: "gpt",
+		Capabilities: map[string]bool{"streaming": true}, Options: map[string]string{ReasoningEffortOptionKey: effort},
 	}
-	return agentmodel.Resolved{Provider: provider, Model: descriptor, Streamer: r.streamer}, nil
+	return agentmodel.Resolved{Provider: provider, Model: descriptor, Streamer: newSafeProviderStateStreamer(streamer)}, nil
 }

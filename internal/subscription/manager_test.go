@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	codexauth "github.com/mattsp1290/codex-auth-go"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 )
+
+type managerRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn managerRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
 
 type fakeAuthClient struct {
 	loginErr  error
@@ -18,6 +25,10 @@ type fakeAuthClient struct {
 	statusErr error
 	http      *http.Client
 	httpErr   error
+	models    []codexauth.ModelCatalogEntry
+	modelsErr error
+	version   string
+	list      func(context.Context, string) ([]codexauth.ModelCatalogEntry, error)
 }
 
 func (f *fakeAuthClient) LoginDevice(context.Context) (codexauth.Credentials, error) {
@@ -28,6 +39,13 @@ func (f *fakeAuthClient) Status(context.Context) (codexauth.StatusInfo, error) {
 }
 func (f *fakeAuthClient) HTTPClient(context.Context) (*http.Client, error) {
 	return f.http, f.httpErr
+}
+func (f *fakeAuthClient) ListModels(ctx context.Context, version string) ([]codexauth.ModelCatalogEntry, error) {
+	f.version = version
+	if f.list != nil {
+		return f.list(ctx, version)
+	}
+	return f.models, f.modelsErr
 }
 
 func TestManagerProjectsStatusAndErrors(t *testing.T) {
@@ -55,7 +73,7 @@ func TestManagerProjectsStatusAndErrors(t *testing.T) {
 func TestManagerHTTPClientCategories(t *testing.T) {
 	want := &http.Client{}
 	got, err := newManager(&fakeAuthClient{http: want}).HTTPClient(context.Background())
-	if err != nil || got != want {
+	if err != nil || got == want || got.Timeout != want.Timeout || got.Transport == nil {
 		t.Fatalf("HTTPClient() = %p, %v", got, err)
 	}
 	_, err = newManager(&fakeAuthClient{httpErr: codexauth.ErrNotLoggedIn}).HTTPClient(context.Background())
@@ -122,3 +140,94 @@ func TestLoginCancellationAndRedaction(t *testing.T) {
 		t.Fatalf("failure = %v", err)
 	}
 }
+
+func TestManagerCatalogNormalizesAndProjectsFixedErrors(t *testing.T) {
+	remote := codexauth.ModelCatalogEntry{
+		Slug: "o4-live", DisplayName: "O4 Live", DefaultReasoningEffort: catalogValue("medium"),
+		SupportedReasoningEfforts: []codexauth.ReasoningEffortOption{{Effort: "medium", Description: "Balanced"}},
+	}
+	fake := &fakeAuthClient{models: []codexauth.ModelCatalogEntry{remote}}
+	models, err := newManager(fake).ListModels(context.Background())
+	if err != nil || fake.version != CatalogCompatibilityVersion || len(models) != 1 || models[0].ModelID != "o4-live" {
+		t.Fatalf("models=%#v version=%q err=%v", models, fake.version, err)
+	}
+	for _, test := range []struct {
+		err  error
+		want error
+	}{
+		{errors.New("TOKEN /secret"), ErrCatalogUnavailable},
+		{fmt.Errorf("wrapped: %w", context.Canceled), context.Canceled},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), context.DeadlineExceeded},
+	} {
+		_, err := newManager(&fakeAuthClient{modelsErr: test.err}).ListModels(context.Background())
+		if !errors.Is(err, test.want) || strings.Contains(err.Error(), "TOKEN") || strings.Contains(err.Error(), "/secret") {
+			t.Fatalf("catalog error=%v want=%v", err, test.want)
+		}
+	}
+	if _, err := (*Manager)(nil).ListModels(context.Background()); !errors.Is(err, ErrCatalogUnavailable) {
+		t.Fatalf("nil manager error=%v", err)
+	}
+}
+
+func TestManagerSerializesCatalogAndProviderThroughHeaderReceipt(t *testing.T) {
+	catalogEntered := make(chan struct{})
+	releaseCatalog := make(chan struct{})
+	providerEntered := make(chan struct{}, 1)
+	catalogCalls := 0
+	fake := &fakeAuthClient{
+		list: func(context.Context, string) ([]codexauth.ModelCatalogEntry, error) {
+			catalogCalls++
+			if catalogCalls == 1 {
+				close(catalogEntered)
+				<-releaseCatalog
+			}
+			return nil, nil
+		},
+		http: &http.Client{Transport: managerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			providerEntered <- struct{}{}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Request: req}, nil
+		})},
+	}
+	manager := newManager(fake)
+	client, err := manager.HTTPClient(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogDone := make(chan error, 1)
+	go func() { _, listErr := manager.ListModels(context.Background()); catalogDone <- listErr }()
+	<-catalogEntered
+	providerCtx, cancelProvider := context.WithCancel(context.Background())
+	request, _ := http.NewRequestWithContext(providerCtx, http.MethodGet, "https://example.invalid", nil)
+	providerDone := make(chan error, 1)
+	go func() { _, requestErr := client.Do(request); providerDone <- requestErr }()
+	select {
+	case <-providerEntered:
+		t.Fatal("provider overlapped catalog")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelProvider()
+	if err := <-providerDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting provider error=%v", err)
+	}
+	close(releaseCatalog)
+	if err := <-catalogDone; err != nil {
+		t.Fatal(err)
+	}
+
+	request, _ = http.NewRequest(http.MethodGet, "https://example.invalid", nil)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	select {
+	case <-providerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("provider never entered after catalog release")
+	}
+	if _, err := manager.ListModels(context.Background()); err != nil {
+		t.Fatalf("catalog gate held for provider body: %v", err)
+	}
+}
+
+func catalogValue(value string) *string { return &value }

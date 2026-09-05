@@ -119,7 +119,7 @@ func TestInterruptBeforeAdmissionRetainsNoDurableTurn(t *testing.T) {
 	release := make(chan struct{})
 	chat.tail = &subscribeBarrierTail{tailer: chat.tail, entered: entered, release: release}
 	resultCh := make(chan error, 1)
-	go func() { _, err := chat.Start(ctx, "unsent draft"); resultCh <- err }()
+	go func() { _, err := chat.Start(ctx, "unsent draft", fixtureStartConfig()); resultCh <- err }()
 	<-entered
 	if err := chat.InterruptActive(ctx); err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestPendingStartHonorsCallerInterruptAndCloseCancellation(t *testing.T) {
 			chat := newOrchestratorTestService(t, runtime)
 			callCtx, cancelCall := context.WithCancel(context.Background())
 			result := make(chan error, 1)
-			go func() { _, err := chat.Start(callCtx, "blocked"); result <- err }()
+			go func() { _, err := chat.Start(callCtx, "blocked", fixtureStartConfig()); result <- err }()
 			<-entered
 			switch control {
 			case "caller":
@@ -276,7 +276,10 @@ func TestContentionCannotPublishWaitingAfterCloseStarts(t *testing.T) {
 	waiting := make(chan struct{})
 	chat.store = &blockingListStore{durableStore: chat.store, entered: waiting}
 	startResult := make(chan error, 1)
-	go func() { _, err := chat.Start(context.Background(), "contended"); startResult <- err }()
+	go func() {
+		_, err := chat.Start(context.Background(), "contended", fixtureStartConfig())
+		startResult <- err
+	}()
 	<-waiting
 	closeResult := make(chan error, 1)
 	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)

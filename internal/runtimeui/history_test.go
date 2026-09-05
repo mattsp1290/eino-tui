@@ -24,7 +24,7 @@ func TestHistoryProjectionOmitsInterruptedEmptyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := chat.Start(ctx, "retained user")
+	result, err := chat.Start(ctx, "retained user", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

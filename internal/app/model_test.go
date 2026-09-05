@@ -8,7 +8,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	agentmodel "github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 )
 
@@ -17,12 +19,14 @@ type fakeService struct {
 	start         runtimeui.ActionResult
 	startErr      error
 	startedPrompt string
+	startedConfig runtimeui.StartConfig
 	interrupts    int
 }
 
 func (s *fakeService) Load(context.Context) (runtimeui.Snapshot, error) { return s.load, nil }
-func (s *fakeService) Start(_ context.Context, prompt string) (runtimeui.ActionResult, error) {
+func (s *fakeService) Start(_ context.Context, prompt string, cfg runtimeui.StartConfig) (runtimeui.ActionResult, error) {
 	s.startedPrompt = prompt
+	s.startedConfig = cfg
 	return s.start, s.startErr
 }
 func (s *fakeService) InterruptActive(context.Context) error                   { s.interrupts++; return nil }
@@ -42,7 +46,10 @@ func newFakeRun(id session.RunID, snapshots ...runtimeui.Snapshot) *fakeRun {
 }
 
 func testDisplayConfig() Config {
-	return Config{Provider: "Codex subscription", Model: "gpt-5.5"}
+	return Config{
+		InitialSelection:       agentmodel.Selection{ProviderID: codexmodel.ProviderID, ModelID: agentmodel.ID(codexmodel.DefaultModel)},
+		InitialReasoningEffort: codexmodel.ReasoningEffortMedium,
+	}
 }
 func (r *fakeRun) ID() session.RunID         { return r.id }
 func (r *fakeRun) Finished() <-chan struct{} { return r.finished }
