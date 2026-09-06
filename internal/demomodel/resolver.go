@@ -7,9 +7,8 @@ import (
 
 	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/providers/fake"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 )
-
-const fixtureReasoningOption = "openaicodex.reasoning_effort"
 
 const (
 	ProviderID = model.ProviderID("demo")
@@ -58,7 +57,7 @@ func ScriptedResolver(wait Waiter, chunks []string) model.Resolver {
 func DynamicResolver(wait Waiter) model.Resolver {
 	return dynamicResolver(wait, func(selection model.Selection, runtime model.Runtime) []fake.Step {
 		return []fake.Step{
-			{Content: "Codex fixture response: selection " + string(selection.ModelID) + " · " + runtime.Options[fixtureReasoningOption] + ". "},
+			{Content: "Codex fixture response: selection " + string(selection.ModelID) + " · " + runtime.Options[codexmodel.ReasoningEffortOptionKey] + ". "},
 			{Content: "Your message was received. "},
 			{Content: "Deterministic test transport completed."},
 		}
@@ -88,7 +87,7 @@ func dynamicResolver(wait Waiter, steps func(model.Selection, model.Runtime) []f
 		wait = TimerWait(50 * time.Millisecond)
 	}
 	return model.ResolverFunc(func(ctx context.Context, selection model.Selection, runtime model.Runtime) (model.Resolved, error) {
-		effort := runtime.Options[fixtureReasoningOption]
+		effort := runtime.Options[codexmodel.ReasoningEffortOptionKey]
 		if selection.ProviderID == "" || selection.ModelID == "" || selection.Variant != "" || effort == "" {
 			return model.Resolved{}, fmt.Errorf("invalid fixture selection")
 		}
@@ -104,7 +103,7 @@ func dynamicResolver(wait Waiter, steps func(model.Selection, model.Runtime) []f
 		if err != nil {
 			return model.Resolved{}, err
 		}
-		resolved.Model.Options = map[string]string{fixtureReasoningOption: effort}
+		resolved.Model.Options = map[string]string{codexmodel.ReasoningEffortOptionKey: effort}
 		resolved.Streamer = pacedStreamer{upstream: resolved.Streamer, wait: wait}
 		return resolved, nil
 	})

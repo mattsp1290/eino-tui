@@ -209,27 +209,32 @@ func (m *Model) pickerView(width, height int) string {
 	var lines []string
 	switch m.picker.mode {
 	case pickerLoading:
-		lines = compactPickerState(height, "Loading account model catalog…", "Esc close")
+		lines = compactPickerState(width, height, "Loading account model catalog…", "Load", pickerHint(width, "Esc close", "Esc"))
 	case pickerFailed:
-		lines = compactPickerState(height, "Model catalog unavailable.", "R retry · Esc close")
+		lines = compactPickerState(width, height, "Model catalog unavailable.", "Fail", pickerHint(width, "R retry · Esc close", "R · Esc", "R/Esc"))
 	case pickerEmpty:
-		lines = compactPickerState(height, "No compatible Codex models are available.", "R refresh · Esc close")
+		lines = compactPickerState(width, height, "No compatible Codex models are available.", "Empty", pickerHint(width, "R refresh · Esc close", "R · Esc", "R/Esc"))
 	case pickerReady:
 		selectedEntry := m.picker.cache[m.picker.highlightedModel]
 		selectedEffort := selectedEntry.SupportedEfforts[m.picker.highlightedEffort]
-		hint := "↑/↓ models · Tab effort · Enter apply · R refresh · Esc close"
-		if width < 60 {
-			hint = "Enter apply · Esc close"
-		}
-		selectedLine := m.pickerModelLine(m.picker.highlightedModel)
+		hint := pickerHint(width, "↑/↓ models · Tab effort · Enter apply · R refresh · Esc close", "Enter apply · Esc close", "Enter · Esc", "↵/Esc")
 		if height == 1 {
-			if width >= 48 {
-				lines = []string{"Enter apply · Esc close · " + selectedLine}
+			compactSelection := m.compactPickerSelection(width)[0]
+			combined := hint + " · " + compactSelection
+			if boundedLine(combined, width) == combined {
+				lines = []string{combined}
 			} else {
-				lines = []string{"Enter apply · Esc close"}
+				lines = []string{hint}
 			}
 			break
 		}
+		if width < 60 {
+			identity := m.compactPickerSelection(width)
+			identity = identity[:min(len(identity), height-1)]
+			lines = append(identity, hint)
+			break
+		}
+		selectedLine := m.pickerModelLine(m.picker.highlightedModel)
 		if height == 2 {
 			lines = []string{selectedLine, hint}
 			break
@@ -266,14 +271,44 @@ func (m *Model) pickerView(width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-func compactPickerState(height int, state, hint string) []string {
+func pickerHint(width int, candidates ...string) string {
+	for _, candidate := range candidates {
+		if boundedLine(candidate, width) == candidate {
+			return candidate
+		}
+	}
+	return candidates[len(candidates)-1]
+}
+
+func compactPickerState(width, height int, state, shortState, hint string) []string {
 	if height <= 1 {
-		return []string{state + " · " + hint}
+		for _, candidate := range []string{shortState + " · " + hint, shortState + " " + hint, hint} {
+			if boundedLine(candidate, width) == candidate {
+				return []string{candidate}
+			}
+		}
+		return []string{hint}
 	}
 	if height == 2 {
 		return []string{state, hint}
 	}
 	return []string{"Model & reasoning", state, hint}
+}
+
+func (m *Model) compactPickerSelection(width int) []string {
+	entry := m.picker.cache[m.picker.highlightedModel]
+	effort := entry.SupportedEfforts[m.picker.highlightedEffort].ID
+	marker := ">"
+	if entry.ModelID == m.selected.selection.ModelID {
+		marker = "*"
+	}
+	model := marker + string(entry.ModelID)
+	effortLabel := "[" + effort + "]"
+	combined := model + " " + effortLabel
+	if boundedLine(combined, width) == combined {
+		return []string{combined}
+	}
+	return []string{boundedLine(model, width), boundedLine(effortLabel, width)}
 }
 
 func (m *Model) pickerModelLine(index int) string {

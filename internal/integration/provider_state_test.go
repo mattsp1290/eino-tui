@@ -230,7 +230,7 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 	client := &http.Client{Transport: transport}
 	sessionID := platform.WorkspaceSessionID(workspace)
 
-	first := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, codexmodel.DefaultModel)
+	first := openCodexFixtureWithClient(t, ctx, paths.Database, sessionID, workspace, client)
 	started, err := first.Start(ctx, "seed cross-model state", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortLow))
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 	closeRuntime(t, first)
 
 	const nextModel = "gpt-5.6"
-	reopened := openCodexFixtureModel(t, ctx, paths.Database, sessionID, workspace, client, nextModel)
+	reopened := openCodexFixtureWithClient(t, ctx, paths.Database, sessionID, workspace, client)
 	continued, err := reopened.Start(ctx, "continue with compatible model", codexStartConfig(nextModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -598,10 +598,10 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 
 func openCodexFixture(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client) runtimeui.Service {
 	t.Helper()
-	return openCodexFixtureModel(t, ctx, database, sessionID, workspace, client, codexmodel.DefaultModel)
+	return openCodexFixtureWithClient(t, ctx, database, sessionID, workspace, client)
 }
 
-func openCodexFixtureModel(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client, _ string) runtimeui.Service {
+func openCodexFixtureWithClient(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client) runtimeui.Service {
 	t.Helper()
 	resolver, err := codexmodel.NewResolver(client)
 	if err != nil {

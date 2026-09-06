@@ -74,7 +74,7 @@ func (r *resolver) Resolve(ctx context.Context, selection agentmodel.Selection, 
 	}
 	provider := agentmodel.Provider{ID: ProviderID, Name: "OpenAI Codex", Source: "eino-providers/openaicodex"}
 	descriptor := agentmodel.Descriptor{
-		ID: selection.ModelID, ProviderID: ProviderID, Name: string(selection.ModelID), Family: "gpt",
+		ID: selection.ModelID, ProviderID: ProviderID, Name: string(selection.ModelID),
 		Capabilities: map[string]bool{"streaming": true}, Options: map[string]string{ReasoningEffortOptionKey: effort},
 	}
 	return agentmodel.Resolved{Provider: provider, Model: descriptor, Streamer: newSafeProviderStateStreamer(streamer)}, nil

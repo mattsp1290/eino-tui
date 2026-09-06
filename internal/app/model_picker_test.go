@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	agentmodel "github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -240,6 +241,53 @@ func TestSelectorFullViewRespectsShortHeightAndKeepsControls(t *testing.T) {
 	model.resize(0, -1)
 	if lines := strings.Count(model.View().Content, "\n") + 1; lines > 1 {
 		t.Fatalf("clamped short view lines=%d", lines)
+	}
+}
+
+func TestPickerCompactLayoutsPreserveFeasibleSemantics(t *testing.T) {
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
+	model.reconcileEffort()
+	for _, width := range []int{8, 12, 18, 24, 60} {
+		for _, height := range []int{1, 2, 3, 4, 5, 6} {
+			view := model.pickerView(width, height)
+			lines := strings.Split(view, "\n")
+			if len(lines) > height {
+				t.Fatalf("width=%d height=%d lines=%d view=%q", width, height, len(lines), view)
+			}
+			for _, line := range lines {
+				if ansi.StringWidth(line) > width {
+					t.Fatalf("width=%d height=%d overlong line=%q", width, height, line)
+				}
+			}
+			if !strings.Contains(view, "Esc") || (!strings.Contains(view, "Enter") && !strings.Contains(view, "↵")) {
+				t.Fatalf("width=%d height=%d lost apply/escape controls: %q", width, height, view)
+			}
+			if height >= 2 && !strings.Contains(view, "o4-live") {
+				t.Fatalf("width=%d height=%d lost model identity: %q", width, height, view)
+			}
+			if (width >= 18 && height >= 2 || height >= 3) && !strings.Contains(view, "[medium]") {
+				t.Fatalf("width=%d height=%d lost feasible effort identity: %q", width, height, view)
+			}
+		}
+	}
+}
+
+func TestPickerCompactStatusLayoutsPreserveControls(t *testing.T) {
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	for _, mode := range []pickerMode{pickerLoading, pickerFailed, pickerEmpty} {
+		model.picker.mode = mode
+		for _, width := range []int{8, 12, 18, 24} {
+			for _, height := range []int{1, 2, 3} {
+				view := model.pickerView(width, height)
+				if !strings.Contains(view, "Esc") {
+					t.Fatalf("mode=%d width=%d height=%d lost escape control: %q", mode, width, height, view)
+				}
+				if mode != pickerLoading && !strings.Contains(view, "R") {
+					t.Fatalf("mode=%d width=%d height=%d lost retry control: %q", mode, width, height, view)
+				}
+			}
+		}
 	}
 }
 
