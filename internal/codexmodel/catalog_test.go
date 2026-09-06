@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	codexauth "github.com/mattsp1290/codex-auth-go"
+	agentmodel "github.com/mattsp1290/eino-agent/model"
 )
 
 func catalogString(value string) *string { return &value }
@@ -95,3 +96,34 @@ func TestNormalizeCatalogResourceBoundsRetainDeterministicPrefix(t *testing.T) {
 }
 
 func agentCatalogID(index int) string { return fmt.Sprintf("catalog-model-%03d", index) }
+
+func TestNormalizeCatalogIndependentAggregateByteCeiling(t *testing.T) {
+	entries := make([]codexauth.ModelCatalogEntry, MaxCatalogEntries)
+	for i := range entries {
+		slug := strings.Repeat("m", agentmodel.MaxProviderStateModelIDBytes-4) + fmt.Sprintf("%04d", i)
+		entries[i] = remoteCatalogEntry(slug, "low", "medium", "high")
+		entries[i].DisplayName = strings.Repeat("n", MaxModelDisplayNameBytes)
+		entries[i].Description = catalogString(strings.Repeat("d", MaxModelDescriptionBytes))
+		for j := range entries[i].SupportedReasoningEfforts {
+			entries[i].SupportedReasoningEfforts[j].Description = strings.Repeat("e", MaxEffortDescriptionBytes)
+		}
+	}
+	got := NormalizeCatalog(entries)
+	if len(got) == 0 || len(got) >= MaxCatalogEntries {
+		t.Fatalf("aggregate limit did not stop before entry cap: %d", len(got))
+	}
+	wantLast := strings.Repeat("m", agentmodel.MaxProviderStateModelIDBytes-4) + fmt.Sprintf("%04d", len(got)-1)
+	if string(got[len(got)-1].ModelID) != wantLast {
+		t.Fatalf("aggregate result is not a prefix: last=%q want=%q", got[len(got)-1].ModelID, wantLast)
+	}
+	total := 0
+	for _, entry := range got {
+		total += len(entry.ModelID) + len(entry.DisplayName) + len(entry.Description)
+		for _, effort := range entry.SupportedEfforts {
+			total += len(effort.ID) + len(effort.Description)
+		}
+	}
+	if total > MaxCatalogPresentationBytes {
+		t.Fatalf("aggregate bytes=%d", total)
+	}
+}

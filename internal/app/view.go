@@ -61,11 +61,11 @@ func (m *Model) View() tea.View {
 	}
 	var content string
 	if m.picker.mode != pickerClosed {
-		available := m.terminalHeight - 2
-		if available < 1 {
-			available = 1
+		if m.terminalHeight <= 1 {
+			content = m.pickerView(m.terminalWidth, 1)
+		} else {
+			content = header + "\n" + m.pickerView(m.terminalWidth, m.terminalHeight-1)
 		}
-		content = header + "\n" + m.pickerView(m.terminalWidth, available)
 	} else {
 		footer := boundedLine("Enter send · Alt+Enter newline · Alt+M models · Esc interrupt · Ctrl+C quit", m.terminalWidth)
 		content = header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + footer

@@ -150,8 +150,8 @@ func (m *Manager) ListModels(ctx context.Context) ([]codexmodel.CatalogEntry, er
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	remote, err := m.client.ListModels(ctx, CatalogCompatibilityVersion)
-	release()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, context.Canceled

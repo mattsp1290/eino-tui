@@ -36,7 +36,6 @@ type pickerState struct {
 	highlightedEffort int
 	generation        uint64
 	cancel            context.CancelFunc
-	notice            string
 }
 
 func (m *Model) openPicker() tea.Cmd {
@@ -62,7 +61,6 @@ func (m *Model) beginCatalogRequest() tea.Cmd {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.picker.cancel = cancel
 	m.picker.mode = pickerLoading
-	m.picker.notice = ""
 	catalog := m.catalog
 	return func() tea.Msg {
 		if catalog == nil {
@@ -84,7 +82,6 @@ func (m *Model) closePicker() {
 	m.cancelCatalogRequest()
 	m.picker.generation++
 	m.picker.mode = pickerClosed
-	m.picker.notice = ""
 	m.textarea.Focus()
 }
 
@@ -98,12 +95,14 @@ func (m *Model) applyCatalogResult(msg catalogLoadedMsg) {
 	if m.picker.mode != pickerLoading || msg.generation != m.picker.generation {
 		return
 	}
-	m.picker.cancel = nil
+	if cancel := m.picker.cancel; cancel != nil {
+		cancel()
+		m.picker.cancel = nil
+	}
 	if msg.err != nil {
 		m.picker.cache = nil
 		m.picker.cacheValid = false
 		m.picker.mode = pickerFailed
-		m.picker.notice = "The model catalog could not be loaded."
 		return
 	}
 	m.picker.cache = append([]codexmodel.CatalogEntry(nil), msg.entries...)
@@ -207,17 +206,34 @@ func (m *Model) pickerView(width, height int) string {
 	if height < 1 {
 		height = 1
 	}
-	lines := []string{"Model & reasoning"}
+	var lines []string
 	switch m.picker.mode {
 	case pickerLoading:
-		lines = append(lines, "Loading account model catalog…", "Esc close")
+		lines = compactPickerState(height, "Loading account model catalog…", "Esc close")
 	case pickerFailed:
-		lines = append(lines, "Model catalog unavailable.", "R retry · Esc close")
+		lines = compactPickerState(height, "Model catalog unavailable.", "R retry · Esc close")
 	case pickerEmpty:
-		lines = append(lines, "No compatible Codex models are available.", "R refresh · Esc close")
+		lines = compactPickerState(height, "No compatible Codex models are available.", "R refresh · Esc close")
 	case pickerReady:
 		selectedEntry := m.picker.cache[m.picker.highlightedModel]
 		selectedEffort := selectedEntry.SupportedEfforts[m.picker.highlightedEffort]
+		hint := "↑/↓ models · Tab effort · Enter apply · R refresh · Esc close"
+		if width < 60 {
+			hint = "Enter apply · Esc close"
+		}
+		selectedLine := m.pickerModelLine(m.picker.highlightedModel)
+		if height == 1 {
+			if width >= 48 {
+				lines = []string{"Enter apply · Esc close · " + selectedLine}
+			} else {
+				lines = []string{"Enter apply · Esc close"}
+			}
+			break
+		}
+		if height == 2 {
+			lines = []string{selectedLine, hint}
+			break
+		}
 		var details []string
 		if height >= 5 && selectedEntry.Description != "" {
 			details = append(details, "  "+selectedEntry.Description)
@@ -237,34 +253,42 @@ func (m *Model) pickerView(width, height int) string {
 		if end-start < room {
 			start = max(0, end-room)
 		}
+		lines = []string{"Model & reasoning"}
 		for i := start; i < end; i++ {
-			entry := m.picker.cache[i]
-			marker := "  "
-			if i == m.picker.highlightedModel {
-				marker = "> "
-			}
-			effort := entry.DefaultEffort
-			if i == m.picker.highlightedModel && len(entry.SupportedEfforts) > 0 {
-				effort = entry.SupportedEfforts[m.picker.highlightedEffort].ID
-			}
-			applied := ""
-			if entry.ModelID == m.selected.selection.ModelID && effort == m.selected.effort {
-				applied = " [applied]"
-			}
-			lines = append(lines, fmt.Sprintf("%s%s · [%s] · %s%s", marker, entry.ModelID, effort, entry.DisplayName, applied))
+			lines = append(lines, m.pickerModelLine(i))
 		}
 		lines = append(lines, details...)
-		hint := "↑/↓ models · Tab effort · Enter apply · R refresh · Esc close"
-		if width < 60 {
-			hint = "Enter apply · Esc close"
-		}
 		lines = append(lines, hint)
-	}
-	if len(lines) > height {
-		lines = lines[:height]
 	}
 	for i := range lines {
 		lines[i] = boundedLine(strings.TrimRight(lines[i], " "), width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func compactPickerState(height int, state, hint string) []string {
+	if height <= 1 {
+		return []string{state + " · " + hint}
+	}
+	if height == 2 {
+		return []string{state, hint}
+	}
+	return []string{"Model & reasoning", state, hint}
+}
+
+func (m *Model) pickerModelLine(index int) string {
+	entry := m.picker.cache[index]
+	marker := "  "
+	if index == m.picker.highlightedModel {
+		marker = "> "
+	}
+	effort := entry.DefaultEffort
+	if index == m.picker.highlightedModel {
+		effort = entry.SupportedEfforts[m.picker.highlightedEffort].ID
+	}
+	applied := ""
+	if entry.ModelID == m.selected.selection.ModelID {
+		applied = " [applied " + m.selected.effort + "]"
+	}
+	return fmt.Sprintf("%s%s · [%s] · %s%s", marker, entry.ModelID, effort, entry.DisplayName, applied)
 }

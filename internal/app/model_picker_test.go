@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	agentmodel "github.com/mattsp1290/eino-agent/model"
@@ -21,6 +22,25 @@ type catalogResult struct {
 type scriptedCatalog struct {
 	calls   int
 	results []catalogResult
+}
+
+type contextCatalog struct {
+	result  catalogResult
+	entered chan context.Context
+	exited  chan struct{}
+	block   bool
+}
+
+func (c *contextCatalog) ListModels(ctx context.Context) ([]codexmodel.CatalogEntry, error) {
+	c.entered <- ctx
+	if c.block {
+		<-ctx.Done()
+		if c.exited != nil {
+			close(c.exited)
+		}
+		return nil, ctx.Err()
+	}
+	return c.result.entries, c.result.err
 }
 
 func (c *scriptedCatalog) ListModels(context.Context) ([]codexmodel.CatalogEntry, error) {
@@ -148,6 +168,89 @@ func TestPickerFailureHasNoStaleCacheAndBusyPhasesIgnoreOpen(t *testing.T) {
 		if _, command := model.Update(altM()); command != nil || model.picker.mode != pickerClosed {
 			t.Fatalf("phase %s opened picker", phase)
 		}
+	}
+}
+
+func TestPickerReleasesCompletedAndCanceledRequestContexts(t *testing.T) {
+	for _, result := range []catalogResult{{entries: pickerCatalog()}, {err: errors.New("fixed failure")}} {
+		catalog := &contextCatalog{result: result, entered: make(chan context.Context, 1)}
+		model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+		_, command := model.Update(altM())
+		message := command()
+		requestContext := <-catalog.entered
+		select {
+		case <-requestContext.Done():
+			t.Fatal("request context canceled before completion was applied")
+		default:
+		}
+		model.Update(message)
+		select {
+		case <-requestContext.Done():
+		default:
+			t.Fatal("completed request context was not released")
+		}
+	}
+
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'c', Text: "c", Mod: tea.ModCtrl}} {
+		catalog := &contextCatalog{entered: make(chan context.Context, 1), exited: make(chan struct{}), block: true}
+		model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+		_, command := model.Update(altM())
+		completion := make(chan tea.Msg, 1)
+		go func() { completion <- command() }()
+		requestContext := <-catalog.entered
+		_, quit := model.Update(key)
+		select {
+		case <-requestContext.Done():
+		case <-time.After(time.Second):
+			t.Fatal("request context was not canceled")
+		}
+		select {
+		case <-catalog.exited:
+		case <-time.After(time.Second):
+			t.Fatal("catalog call did not exit after cancellation")
+		}
+		model.Update(<-completion)
+		if key.Mod == tea.ModCtrl {
+			if quit == nil {
+				t.Fatal("ctrl+c did not return quit command")
+			}
+		} else if model.picker.mode != pickerClosed {
+			t.Fatal("escape did not close picker")
+		}
+	}
+}
+
+func TestSelectorFullViewRespectsShortHeightAndKeepsControls(t *testing.T) {
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
+	model.reconcileEffort()
+	for _, height := range []int{1, 2, 3, 4, 5} {
+		model.resize(100, height)
+		content := model.View().Content
+		if lines := strings.Count(content, "\n") + 1; lines > height {
+			t.Fatalf("height=%d rendered lines=%d: %q", height, lines, content)
+		}
+		if !strings.Contains(content, "Enter apply") || !strings.Contains(content, "Esc close") {
+			t.Fatalf("height=%d lost controls: %q", height, content)
+		}
+		if height >= 2 && (!strings.Contains(content, "o4-live") || !strings.Contains(content, "[medium]")) {
+			t.Fatalf("height=%d lost selection identity: %q", height, content)
+		}
+	}
+	model.resize(0, -1)
+	if lines := strings.Count(model.View().Content, "\n") + 1; lines > 1 {
+		t.Fatalf("clamped short view lines=%d", lines)
+	}
+}
+
+func TestAppliedMarkerRetainsNonDefaultEffortOffHighlight(t *testing.T) {
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model.selected.effort = codexmodel.ReasoningEffortLow
+	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
+	model.reconcileEffort()
+	line := model.pickerModelLine(0)
+	if !strings.Contains(line, "[applied low]") {
+		t.Fatalf("applied state lost off highlight: %q", line)
 	}
 }
 
