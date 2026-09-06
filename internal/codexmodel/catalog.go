@@ -51,6 +51,15 @@ func ValidateCatalogModelID(value string) error {
 	return nil
 }
 
+// ValidateSelection enforces the complete Codex selection boundary shared by
+// application defaults, runtime admission, and provider resolution.
+func ValidateSelection(selection agentmodel.Selection) error {
+	if selection.ProviderID != ProviderID || selection.Variant != "" || ValidateCatalogModelID(string(selection.ModelID)) != nil {
+		return ErrInvalidModel
+	}
+	return nil
+}
+
 // ValidReasoningEffort reports whether effort is part of the provider's public contract.
 func ValidReasoningEffort(effort string) bool {
 	switch effort {

@@ -42,7 +42,7 @@ type Config struct {
 
 func New(ctx context.Context, service runtimeui.Service, cfg Config) *Model {
 	selection := cfg.InitialSelection
-	if selection.ProviderID != codexmodel.ProviderID || selection.Variant != "" || codexmodel.ValidateCatalogModelID(string(selection.ModelID)) != nil {
+	if codexmodel.ValidateSelection(selection) != nil {
 		selection = agentmodel.Selection{ProviderID: codexmodel.ProviderID, ModelID: agentmodel.ID(codexmodel.DefaultModel)}
 	}
 	effort := cfg.InitialReasoningEffort

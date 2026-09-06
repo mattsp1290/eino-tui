@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mattsp1290/eino-agent/config"
-	agentmodel "github.com/mattsp1290/eino-agent/model"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/stream"
@@ -173,9 +172,7 @@ func (s *service) Start(ctx context.Context, prompt string, startConfig StartCon
 }
 
 func validStartConfig(cfg StartConfig) bool {
-	return cfg.Selection.ProviderID == codexmodel.ProviderID && cfg.Selection.Variant == "" &&
-		agentmodel.ValidateProviderStateIdentity(string(cfg.Selection.ProviderID), string(cfg.Selection.ModelID)) == nil &&
-		codexmodel.ValidateCatalogModelID(string(cfg.Selection.ModelID)) == nil &&
+	return codexmodel.ValidateSelection(cfg.Selection) == nil &&
 		codexmodel.ValidReasoningEffort(cfg.ReasoningEffort)
 }
 

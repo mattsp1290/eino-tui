@@ -23,6 +23,26 @@ func remoteCatalogEntry(slug string, efforts ...string) codexauth.ModelCatalogEn
 	}
 }
 
+func TestValidateSelectionOwnsCodexSelectionBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection agentmodel.Selection
+		valid     bool
+	}{
+		{name: "valid", selection: agentmodel.Selection{ProviderID: ProviderID, ModelID: "o4-live"}, valid: true},
+		{name: "wrong provider", selection: agentmodel.Selection{ProviderID: "demo", ModelID: "o4-live"}},
+		{name: "invalid model identity", selection: agentmodel.Selection{ProviderID: ProviderID, ModelID: "bad model"}},
+		{name: "variant", selection: agentmodel.Selection{ProviderID: ProviderID, ModelID: "o4-live", Variant: "fast"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ValidateSelection(test.selection) == nil; got != test.valid {
+				t.Fatalf("ValidateSelection(%#v) valid=%v want=%v", test.selection, got, test.valid)
+			}
+		})
+	}
+}
+
 func TestNormalizeCatalogPreservesAuthoritativeOrderAndClosedEfforts(t *testing.T) {
 	first := remoteCatalogEntry("o4-mini-live", "xhigh", "low", "low", "high")
 	first.DisplayName = "  Safe\tname\nnext\u2028line \x1b]0;CANARY\a"

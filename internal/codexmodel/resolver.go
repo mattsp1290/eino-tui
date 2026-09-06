@@ -60,8 +60,7 @@ func newResolver(client *http.Client, factory chatModelFactory) (agentmodel.Reso
 
 func (r *resolver) Resolve(ctx context.Context, selection agentmodel.Selection, runtime agentmodel.Runtime) (agentmodel.Resolved, error) {
 	effort, hasEffort := runtime.Options[ReasoningEffortOptionKey]
-	if r == nil || r.client == nil || r.factory == nil || r.codec == nil || selection.ProviderID != ProviderID ||
-		ValidateCatalogModelID(string(selection.ModelID)) != nil || selection.Variant != "" || !hasEffort ||
+	if r == nil || r.client == nil || r.factory == nil || r.codec == nil || ValidateSelection(selection) != nil || !hasEffort ||
 		len(runtime.Options) != 1 || !ValidReasoningEffort(effort) {
 		return agentmodel.Resolved{}, fmt.Errorf("resolve Codex model: %w", ErrInvalidModel)
 	}
