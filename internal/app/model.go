@@ -10,6 +10,8 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	agentmodel "github.com/mattsp1290/eino-agent/model"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
@@ -25,18 +27,27 @@ type Model struct {
 	stableWidth      int
 	stableMessages   []runtimeui.Message
 	stableTranscript string
-	display          Config
+	selected         selectedModel
+	catalog          codexmodel.Catalog
+	picker           pickerState
+	terminalWidth    int
+	terminalHeight   int
 }
 
 type Config struct {
-	Provider string
-	Model    string
+	Catalog                codexmodel.Catalog
+	InitialSelection       agentmodel.Selection
+	InitialReasoningEffort string
 }
 
 func New(ctx context.Context, service runtimeui.Service, cfg Config) *Model {
-	display := Config{
-		Provider: safeMetadata(cfg.Provider, "Codex subscription", 128),
-		Model:    safeMetadata(cfg.Model, "unknown model", 256),
+	selection := cfg.InitialSelection
+	if codexmodel.ValidateSelection(selection) != nil {
+		selection = agentmodel.Selection{ProviderID: codexmodel.ProviderID, ModelID: agentmodel.ID(codexmodel.DefaultModel)}
+	}
+	effort := cfg.InitialReasoningEffort
+	if !codexmodel.ValidReasoningEffort(effort) {
+		effort = codexmodel.ReasoningEffortMedium
 	}
 	input := textarea.New()
 	input.Placeholder = "Type a message…"
@@ -48,7 +59,12 @@ func New(ctx context.Context, service runtimeui.Service, cfg Config) *Model {
 	input.Focus()
 	view := viewport.New()
 	view.SoftWrap = true
-	return &Model{ctx: ctx, service: service, textarea: input, viewport: view, snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, display: display}
+	return &Model{
+		ctx: ctx, service: service, textarea: input, viewport: view,
+		snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, catalog: cfg.Catalog,
+		selected: selectedModel{selection: selection, displayName: safeMetadata(string(selection.ModelID), "unknown model", codexmodel.MaxModelDisplayNameBytes), effort: effort},
+		picker:   pickerState{mode: pickerClosed},
+	}
 }
 
 func safeMetadata(value, fallback string, maxBytes int) string {
@@ -65,9 +81,9 @@ func (m *Model) loadCmd() tea.Cmd {
 	return func() tea.Msg { snapshot, err := m.service.Load(m.ctx); return loadedMsg{snapshot: snapshot, err: err} }
 }
 
-func (m *Model) startCmd(draft string) tea.Cmd {
+func (m *Model) startCmd(draft string, cfg runtimeui.StartConfig) tea.Cmd {
 	return func() tea.Msg {
-		result, err := m.service.Start(m.ctx, draft)
+		result, err := m.service.Start(m.ctx, draft, cfg)
 		return startedMsg{draft: draft, result: result, err: err}
 	}
 }
@@ -112,11 +128,13 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.applyLoad(msg.snapshot)
+		m.closePickerIfBusy(msg.snapshot.Phase)
 		if m.snapshot.Phase == runtimeui.PhaseRecoveryWaiting {
 			return m, recoveryTimer(m.ctx, msg.snapshot.RecoveryAt)
 		}
 		return m, nil
 	case startedMsg:
+		m.closePickerIfBusy(runtimeui.PhaseStarting)
 		if msg.err != nil {
 			m.snapshot.Phase = runtimeui.PhaseIdle
 			if !errors.Is(msg.err, context.Canceled) {
@@ -136,6 +154,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.snapshot.RunID == m.pending.ID() && msg.snapshot.Version > m.lastVersion {
+			m.closePickerIfBusy(msg.snapshot.Phase)
 			m.snapshot = msg.snapshot
 			m.lastVersion = msg.snapshot.Version
 			if msg.snapshot.Terminal {
@@ -157,6 +176,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case recoveredMsg:
+		m.closePickerIfBusy(runtimeui.PhaseRecovering)
 		if msg.err != nil {
 			m.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 			m.snapshot.Notice = runtimeui.NoticeRecoveryWaiting
@@ -173,11 +193,14 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot.Notice = "The active response could not be interrupted."
 		}
 		return m, nil
+	case catalogLoadedMsg:
+		m.applyCatalogResult(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.PasteMsg:
-		if m.snapshot.Phase != runtimeui.PhaseIdle {
+		if m.snapshot.Phase != runtimeui.PhaseIdle || m.picker.mode != pickerClosed {
 			return m, nil
 		}
 		value, err := textsafe.Input(m.textarea.Value() + msg.Content)
@@ -188,7 +211,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	if m.snapshot.Phase == runtimeui.PhaseIdle {
+	if m.snapshot.Phase == runtimeui.PhaseIdle && m.picker.mode == pickerClosed {
 		before := m.textarea.Value()
 		updated, cmd := m.textarea.Update(message)
 		m.textarea = updated
@@ -224,6 +247,8 @@ func (m *Model) resize(width, height int) {
 	if height < 1 {
 		height = 1
 	}
+	m.terminalWidth = width
+	m.terminalHeight = height
 	contentWidth := width - 2
 	if contentWidth < 1 {
 		contentWidth = 1

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -15,9 +16,16 @@ import (
 
 func openDemoFixture(ctx context.Context, database string, id session.ID, workspace string, resolver model.Resolver) (runtimeui.Service, error) {
 	return runtimeui.Open(ctx, database, id, workspace, runtimeui.Config{
-		Resolver: resolver, Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		Resolver:  resolver,
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
+}
+
+func demoStartConfig() runtimeui.StartConfig {
+	return runtimeui.StartConfig{
+		Selection:       model.Selection{ProviderID: codexmodel.ProviderID, ModelID: codexmodel.DefaultModel},
+		ReasoningEffort: "medium",
+	}
 }
 
 func TestProductionWiringDurableJourney(t *testing.T) {
@@ -28,11 +36,11 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	service, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	service, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Start(ctx, "Unicode λ\nmultiline")
+	result, err := service.Start(ctx, "Unicode λ\nmultiline", demoStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +67,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 	if err := service.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	reopened, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,11 +100,11 @@ func TestBackpressuredConsumerReceivesAuthoritativeTerminalReplay(t *testing.T) 
 			return nil
 		}
 	}
-	service, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.ScriptedResolver(waiter, chunks))
+	service, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.DynamicScriptedResolver(waiter, chunks))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Start(ctx, "backpressure")
+	result, err := service.Start(ctx, "backpressure", demoStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,15 +146,15 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 		t.Fatal(err)
 	}
 	id := platform.WorkspaceSessionID(workspace)
-	owner, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
+	owner, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	active, err := owner.Start(ctx, "owned elsewhere")
+	active, err := owner.Start(ctx, "owned elsewhere", demoStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	contender, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.Resolver(nil))
+	contender, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,11 +203,11 @@ func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyID := session.ID("workspace-v1-legacy-fixture")
-	legacy, err := openDemoFixture(ctx, paths.Database, legacyID, workspace, demomodel.Resolver(nil))
+	legacy, err := openDemoFixture(ctx, paths.Database, legacyID, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := legacy.Start(ctx, "legacy demo prompt")
+	started, err := legacy.Start(ctx, "legacy demo prompt", demoStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +220,7 @@ func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
 	}
 	cancel()
 
-	current, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.Resolver(nil))
+	current, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,6 +33,10 @@ func (t blockingTransport) RoundTrip(request *http.Request) (*http.Response, err
 
 type responseRecordingTransport struct{ request []byte }
 
+func reasoningRuntime(effort string) agentmodel.Runtime {
+	return agentmodel.Runtime{Options: map[string]string{ReasoningEffortOptionKey: effort}}
+}
+
 func (t *responseRecordingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	body, err := io.ReadAll(request.Body)
 	if err != nil {
@@ -75,7 +79,7 @@ func TestResolverUsesAuthenticatedClientAndExactStateContract(t *testing.T) {
 	httpClient := &http.Client{}
 	var capturedClient *http.Client
 	var capturedConfig openaicodex.ChatModelConfig
-	resolver, err := newResolver(context.Background(), httpClient, DefaultModel, func(_ context.Context, client *http.Client, cfg openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
+	resolver, err := newResolver(httpClient, func(_ context.Context, client *http.Client, cfg openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
 		capturedClient, capturedConfig = client, cfg
 		return inertChatModel{}, nil
 	})
@@ -83,7 +87,7 @@ func TestResolverUsesAuthenticatedClientAndExactStateContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}
-	resolved, err := resolver.Resolve(context.Background(), selection, agentmodel.Runtime{})
+	resolved, err := resolver.Resolve(context.Background(), selection, reasoningRuntime(ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +107,70 @@ func TestResolverUsesAuthenticatedClientAndExactStateContract(t *testing.T) {
 	}
 }
 
+func TestResolverBuildsFreshImmutableModelForEveryAcceptedPair(t *testing.T) {
+	client := &http.Client{}
+	var captured []openaicodex.ChatModelConfig
+	resolver, err := newResolver(client, func(_ context.Context, got *http.Client, cfg openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
+		if got != client {
+			t.Fatalf("client=%p want=%p", got, client)
+		}
+		captured = append(captured, cfg)
+		return inertChatModel{}, nil
+	})
+	if err != nil || len(captured) != 0 {
+		t.Fatalf("construction err=%v provider builds=%d", err, len(captured))
+	}
+	pairs := []struct{ model, effort string }{
+		{DefaultModel, ReasoningEffortLow}, {"o4-live", ReasoningEffortMedium}, {DefaultModel, ReasoningEffortHigh},
+	}
+	var prior agentmodel.Resolved
+	for i, pair := range pairs {
+		resolved, resolveErr := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(pair.model)}, reasoningRuntime(pair.effort))
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		if resolved.Model.ID != agentmodel.ID(pair.model) || resolved.Model.Options[ReasoningEffortOptionKey] != pair.effort || captured[i].Model != pair.model || captured[i].ReasoningEffort != pair.effort {
+			t.Fatalf("pair %d resolved=%#v captured=%#v", i, resolved.Model, captured[i])
+		}
+		if i > 0 && prior.Model.Options[ReasoningEffortOptionKey] != pairs[i-1].effort {
+			t.Fatalf("prior resolution mutated: %#v", prior.Model)
+		}
+		prior = resolved
+	}
+}
+
+func TestResolverRejectsInvalidRuntimeBeforeFactoryAndRedactsFactoryFailures(t *testing.T) {
+	calls := 0
+	resolver, err := newResolver(&http.Client{}, func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
+		calls++
+		return nil, errors.New("TOKEN /secret")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}
+	for _, runtime := range []agentmodel.Runtime{
+		{}, reasoningRuntime("xhigh"),
+		{Options: map[string]string{ReasoningEffortOptionKey: ReasoningEffortLow, "canary": "TOKEN"}},
+	} {
+		if _, err := resolver.Resolve(context.Background(), selection, runtime); err == nil {
+			t.Fatalf("runtime accepted: %#v", runtime)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("factory calls before valid input=%d", calls)
+	}
+	_, err = resolver.Resolve(context.Background(), selection, reasoningRuntime(ReasoningEffortLow))
+	if err == nil || strings.Contains(err.Error(), "TOKEN") || strings.Contains(err.Error(), "/secret") || calls != 1 {
+		t.Fatalf("factory error=%v calls=%d", err, calls)
+	}
+	if _, err := newResolver(nil, nil); err == nil {
+		t.Fatal("nil construction accepted")
+	}
+}
+
 func TestResolverRejectsSelectionDrift(t *testing.T) {
-	resolver, err := newResolver(context.Background(), &http.Client{}, DefaultModel, func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
+	resolver, err := newResolver(&http.Client{}, func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
 		return inertChatModel{}, nil
 	})
 	if err != nil {
@@ -112,10 +178,10 @@ func TestResolverRejectsSelectionDrift(t *testing.T) {
 	}
 	for _, selection := range []agentmodel.Selection{
 		{ProviderID: "other", ModelID: agentmodel.ID(DefaultModel)},
-		{ProviderID: ProviderID, ModelID: "gpt-5.6"},
+		{ProviderID: ProviderID, ModelID: "bad model"},
 		{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel), Variant: "unsafe"},
 	} {
-		if _, err := resolver.Resolve(context.Background(), selection, agentmodel.Runtime{}); err == nil {
+		if _, err := resolver.Resolve(context.Background(), selection, reasoningRuntime(ReasoningEffortMedium)); err == nil {
 			t.Fatalf("selection accepted: %#v", selection)
 		}
 	}
@@ -123,13 +189,13 @@ func TestResolverRejectsSelectionDrift(t *testing.T) {
 
 func TestStateMismatchFailsBeforeProviderDispatch(t *testing.T) {
 	client := &countingChatModel{}
-	resolver, err := newResolver(context.Background(), &http.Client{}, DefaultModel, func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
+	resolver, err := newResolver(&http.Client{}, func(context.Context, *http.Client, openaicodex.ChatModelConfig) (einomodel.ToolCallingChatModel, error) {
 		return client, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, agentmodel.Runtime{})
+	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, reasoningRuntime(ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,11 +216,11 @@ func TestStateMismatchFailsBeforeProviderDispatch(t *testing.T) {
 
 func TestRealProviderTransportHonorsCancellation(t *testing.T) {
 	entered := make(chan struct{})
-	resolver, err := NewResolver(context.Background(), &http.Client{Transport: blockingTransport{entered: entered}}, DefaultModel)
+	resolver, err := NewResolver(&http.Client{Transport: blockingTransport{entered: entered}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, agentmodel.Runtime{})
+	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, reasoningRuntime(ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +242,11 @@ func TestRealProviderTransportHonorsCancellation(t *testing.T) {
 
 func TestRealProviderStreamsTextUsageAndNoTools(t *testing.T) {
 	transport := &responseRecordingTransport{}
-	resolver, err := NewResolver(context.Background(), &http.Client{Transport: transport}, DefaultModel)
+	resolver, err := NewResolver(&http.Client{Transport: transport})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, agentmodel.Runtime{})
+	resolved, err := resolver.Resolve(context.Background(), agentmodel.Selection{ProviderID: ProviderID, ModelID: agentmodel.ID(DefaultModel)}, reasoningRuntime(ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
 	}

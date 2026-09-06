@@ -26,6 +26,7 @@ type Subscription interface {
 	LoginDevice(context.Context) error
 	Status(context.Context) (subscription.Status, error)
 	HTTPClient(context.Context) (*http.Client, error)
+	ListModels(context.Context) ([]codexmodel.CatalogEntry, error)
 }
 
 type Dependencies struct {
@@ -34,7 +35,7 @@ type Dependencies struct {
 	PrepareState     func(context.Context, string) (platform.Paths, error)
 	NewSubscription  func(io.Writer) Subscription
 	SignalContext    func(context.Context) (context.Context, context.CancelFunc)
-	NewResolver      func(context.Context, *http.Client, string) (agentmodel.Resolver, error)
+	NewResolver      func(*http.Client) (agentmodel.Resolver, error)
 	OpenService      func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error)
 	NewApplication   func(context.Context, runtimeui.Service, context.CancelFunc, app.Config) (tea.Model, *app.Fatal)
 	NewProgram       func(tea.Model, context.Context, io.Reader, io.Writer) Program

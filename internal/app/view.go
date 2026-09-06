@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 )
 
@@ -49,15 +50,36 @@ func (m *Model) refreshTranscript() {
 }
 
 func (m *Model) View() tea.View {
-	header := headerStyle.Render("eino-tui · " + m.display.Provider + " · " + m.display.Model)
+	headerText := "eino-tui · Codex subscription · " + m.selected.displayName + " (" + string(m.selected.selection.ModelID) + ") · " + m.selected.effort
+	if m.terminalWidth > 0 && ansi.StringWidth(headerText) > m.terminalWidth {
+		headerText = "eino-tui · " + string(m.selected.selection.ModelID) + " · " + m.selected.effort
+	}
+	header := headerStyle.Render(boundedLine(headerText, m.terminalWidth))
 	notice := m.snapshot.Notice
 	if notice == "" {
 		notice = phaseText(m.snapshot.Phase)
 	}
-	content := header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\nEnter send · Alt+Enter newline · Esc interrupt · Ctrl+C quit"
+	var content string
+	if m.picker.mode != pickerClosed {
+		if m.terminalHeight <= 1 {
+			content = m.pickerView(m.terminalWidth, 1)
+		} else {
+			content = header + "\n" + m.pickerView(m.terminalWidth, m.terminalHeight-1)
+		}
+	} else {
+		footer := boundedLine("Enter send · Alt+Enter newline · Alt+M models · Esc interrupt · Ctrl+C quit", m.terminalWidth)
+		content = header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + footer
+	}
 	view := tea.NewView(content)
 	view.AltScreen = true
 	return view
+}
+
+func boundedLine(value string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return ansi.Truncate(value, width, "…")
 }
 
 func phaseText(phase runtimeui.Phase) string {

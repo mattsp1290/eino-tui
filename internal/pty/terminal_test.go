@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -126,6 +125,26 @@ func (p *terminalProcess) waitText(t *testing.T, needle string, timeout time.Dur
 		}
 	}
 }
+func (p *terminalProcess) waitTextAfter(t *testing.T, start int, needle string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			output := p.text()
+			if start < len(output) && strings.Contains(output[start:], needle) {
+				return output[start:]
+			}
+		case <-p.done:
+			t.Fatalf("process exited before new %q: %v\n%s", needle, p.exitError(), p.text())
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for new %q\n%s", needle, p.text())
+		}
+	}
+}
 func (p *terminalProcess) waitExit(t *testing.T, timeout time.Duration) error {
 	t.Helper()
 	select {
@@ -147,7 +166,7 @@ func TestProductionBinaryNoAuthCommandsNeverAcquireTerminal(t *testing.T) {
 		want string
 	}{
 		{name: "help", args: []string{"--help"}, want: "Usage: eino-tui"},
-		{name: "version", args: []string{"--version"}, want: "0.2.0"},
+		{name: "version", args: []string{"--version"}, want: "0.3.0"},
 		{name: "invalid model", args: []string{"--model", "gpt-5.5\nTOKEN"}, want: "invalid command or model"},
 	}
 	for _, test := range tests {
@@ -197,7 +216,7 @@ func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
 	process.waitText(t, "Codex subscription", 3*time.Second)
 	process.write(t, "hello λ\r")
 	process.waitText(t, "response:", 3*time.Second)
-	process.waitText(t, "Deterministic test transport", 3*time.Second)
+	process.waitText(t, "transport completed.", 3*time.Second)
 	process.write(t, "\x03")
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)
@@ -216,6 +235,95 @@ func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
 	replay.write(t, "\x04")
 	if err := replay.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("replay exit: %v", err)
+	}
+}
+
+func TestModelSelectorLoadsLazilyAndCancelKeepsPromptUsable(t *testing.T) {
+	temp := t.TempDir()
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	process := startTerminal(t, fixture, []string{"--block-first-catalog"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
+	if strings.Contains(process.text(), "Loading account model catalog") {
+		t.Fatal("catalog loaded before selector open")
+	}
+	process.write(t, "\x1bm")
+	process.waitText(t, "Loading account model catalog", 3*time.Second)
+	closedAt := len(process.text())
+	process.write(t, "\x1b")
+	process.waitTextAfter(t, closedAt, "Codex subscription ready", 3*time.Second)
+	process.write(t, "usable after catalog cancel\r")
+	process.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+}
+
+func TestModelSelectorAppliesNextTurnAndRefreshCancelPreservesSecondDraft(t *testing.T) {
+	temp := t.TempDir()
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	process := startTerminal(t, fixture, []string{"--block-catalog-refresh"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "gpt-5.5 (gpt-5.5) · medium", 3*time.Second)
+	process.write(t, "\x1b[200~first line\nsecond line\x1b[201~")
+	process.write(t, "\x1bm")
+	process.waitText(t, "GPT-5.5 Fixture", 3*time.Second)
+	process.waitText(t, "GPT-5.6 Fixture", 3*time.Second)
+	process.write(t, "\x1b[B")
+	process.write(t, "\t")
+	process.write(t, "\r")
+	process.waitText(t, "GPT-5.6 Fixture (gpt-5.6) · high", 3*time.Second)
+	process.waitText(t, "first line", 3*time.Second)
+	process.write(t, "\r")
+	process.waitText(t, "selection gpt-5.6 · high", 3*time.Second)
+	process.waitText(t, "transport completed.", 3*time.Second)
+
+	draftAt := len(process.text())
+	process.write(t, "\x1b[200~next draft\nkept intact\x1b[201~")
+	process.waitTextAfter(t, draftAt, "kept intact", 3*time.Second)
+	openAt := len(process.text())
+	process.write(t, "\x1bm")
+	process.waitTextAfter(t, openAt, "Model & reasoning", 3*time.Second)
+	start := len(process.text())
+	process.write(t, "r")
+	process.waitTextAfter(t, start, "Loading account model catalog", 3*time.Second)
+	closeAt := len(process.text())
+	process.write(t, "\x1b")
+	process.waitTextAfter(t, closeAt, "Codex subscription ready", 3*time.Second)
+	process.waitTextAfter(t, start, "next draft", 3*time.Second)
+	if !strings.Contains(process.text(), "GPT-5.6 Fixture (gpt-5.6) · high") {
+		t.Fatal("refresh cancel lost applied selection")
+	}
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	output := process.text()
+	if !strings.Contains(output, "\x1b[?1049h") || !strings.Contains(output, "\x1b[?1049l") || !strings.Contains(output, "\x1b[?2004l") || !strings.Contains(output, "\x1b[?25h") {
+		t.Fatalf("terminal modes not restored: %q", output)
+	}
+}
+
+func TestModelSelectorIsSuppressedDuringBusyTurn(t *testing.T) {
+	temp := t.TempDir()
+	fixture := filepath.Join(temp, "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	process := startTerminal(t, fixture, []string{"--long"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
+	process.write(t, "busy selector test\r")
+	process.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
+	start := len(process.text())
+	process.write(t, "\x1bm")
+	time.Sleep(100 * time.Millisecond)
+	if output := process.text(); start < len(output) && strings.Contains(output[start:], "Model & reasoning") {
+		t.Fatal("selector opened during active turn")
+	}
+	process.write(t, "\x1b")
+	process.waitText(t, "[interrupted]", 3*time.Second)
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
 	}
 }
 
@@ -261,7 +369,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	recovered.waitText(t, "Waiting to recover", 3*time.Second)
 	recovered.waitText(t, "Response interrupted.", 8*time.Second)
 	recovered.write(t, "after recovery\r")
-	recovered.waitText(t, "Deterministic test transport", 3*time.Second)
+	recovered.waitText(t, "transport completed.", 3*time.Second)
 	recovered.write(t, "\x03")
 	if err := recovered.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("recovered exit: %v", err)
@@ -379,7 +487,7 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat, err := runtimeui.Open(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, runtimeui.Config{
-		Resolver: demomodel.Resolver(nil), Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		Resolver:  demomodel.DynamicResolver(nil),
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
 	if err != nil {

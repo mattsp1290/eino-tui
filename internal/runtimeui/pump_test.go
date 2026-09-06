@@ -13,7 +13,6 @@ import (
 	codexauth "github.com/mattsp1290/codex-auth-go"
 	"github.com/mattsp1290/eino-agent/composition"
 	"github.com/mattsp1290/eino-agent/config"
-	"github.com/mattsp1290/eino-agent/model"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/store/sqlite"
@@ -60,15 +59,14 @@ func TestSequentialTurnsCancelEveryTailSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection := model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID}
-	snapshot := config.Snapshot{Agent: config.Agent{Name: "demo", Model: selection}, Model: selection, Metadata: map[string]string{"workspace_root": workspace}}
-	orchestrator, err := agentruntime.NewStreamingOrchestrator(agentruntime.WithStore(store), agentruntime.WithModelResolver(demomodel.Resolver(func(context.Context) error { return nil })), agentruntime.WithEventSink(tail), agentruntime.WithIDGenerator(platform.IDs{}), agentruntime.WithRunPlanProvider(plans), agentruntime.WithOwnerID("subscriber-test"), agentruntime.WithQueueSize(16), agentruntime.WithLease(5*time.Second))
+	snapshot := config.Snapshot{Agent: config.Agent{Name: "demo"}, Metadata: map[string]string{"workspace_root": workspace}}
+	orchestrator, err := agentruntime.NewStreamingOrchestrator(agentruntime.WithStore(store), agentruntime.WithModelResolver(demomodel.DynamicResolver(func(context.Context) error { return nil })), agentruntime.WithEventSink(tail), agentruntime.WithIDGenerator(platform.IDs{}), agentruntime.WithRunPlanProvider(plans), agentruntime.WithOwnerID("subscriber-test"), agentruntime.WithQueueSize(16), agentruntime.WithLease(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	chat := newService(ctx, store, tail, orchestrator, platform.WorkspaceSessionID(workspace), snapshot)
 	for index := 0; index < 10; index++ {
-		result, err := chat.Start(ctx, "turn")
+		result, err := chat.Start(ctx, "turn", fixtureStartConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +222,7 @@ func TestPumpPanicsCannotStrandRun(t *testing.T) {
 		}
 		chat := opened.(*service)
 		chat.store = &panicListStore{durableStore: chat.store, panicAt: 2}
-		result, err := chat.Start(ctx, "pump panic user")
+		result, err := chat.Start(ctx, "pump panic user", fixtureStartConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +254,7 @@ func TestPostAdmissionProjectionFailureStillReturnsAdmittedRunAndReconciles(t *t
 	failing := &failListStore{durableStore: chat.store}
 	failing.remaining.Store(1)
 	chat.store = failing
-	result, err := chat.Start(ctx, "durably admitted once")
+	result, err := chat.Start(ctx, "durably admitted once", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

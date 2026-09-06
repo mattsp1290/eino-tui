@@ -13,12 +13,12 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-agent/stream"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 )
 
 type Config struct {
 	Resolver     model.Resolver
-	Selection    model.Selection
 	AgentName    string
 	SystemPrompt string
 }
@@ -32,8 +32,7 @@ func Open(ctx context.Context, database string, sessionID session.ID, workspace 
 }
 
 func validateConfig(cfg Config) error {
-	if cfg.Resolver == nil || cfg.Selection.ProviderID == "" || cfg.Selection.ModelID == "" || cfg.Selection.Variant != "" ||
-		cfg.AgentName == "" || cfg.SystemPrompt == "" {
+	if cfg.Resolver == nil || cfg.AgentName == "" || cfg.SystemPrompt == "" {
 		return fmt.Errorf("build runtime: invalid configuration")
 	}
 	return nil
@@ -52,8 +51,7 @@ func open(ctx context.Context, database string, sessionID session.ID, workspace 
 		return nil, fmt.Errorf("build runtime: %w", err)
 	}
 	snapshot := config.Snapshot{
-		Agent:    config.Agent{Name: cfg.AgentName, SystemPrompt: cfg.SystemPrompt, Model: cfg.Selection},
-		Model:    cfg.Selection,
+		Agent:    config.Agent{Name: cfg.AgentName, SystemPrompt: cfg.SystemPrompt},
 		Metadata: map[string]string{"workspace_id": string(sessionID), "workspace_root": workspace},
 	}
 	orchestrator, err := agentruntime.NewStreamingOrchestrator(
@@ -61,6 +59,7 @@ func open(ctx context.Context, database string, sessionID session.ID, workspace 
 		agentruntime.WithEventSink(tail), agentruntime.WithIDGenerator(platform.IDs{}),
 		agentruntime.WithRunPlanProvider(plans), agentruntime.WithOwnerID("eino-tui-"+string(platform.IDs{}.NewEventID())),
 		agentruntime.WithQueueSize(16), agentruntime.WithLease(5*time.Second),
+		agentruntime.WithModelRequestSafeOptions(codexmodel.ReasoningEffortOptionKey),
 	)
 	if err != nil {
 		tail.Close()

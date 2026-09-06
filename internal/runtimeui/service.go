@@ -11,6 +11,7 @@ import (
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/stream"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
@@ -117,7 +118,7 @@ func (s *service) Load(ctx context.Context) (Snapshot, error) {
 	return Snapshot{Messages: messages, Phase: PhaseIdle}, nil
 }
 
-func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error) {
+func (s *service) Start(ctx context.Context, prompt string, startConfig StartConfig) (ActionResult, error) {
 	normalized, err := textsafe.Prompt(prompt)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("%w", ErrInvalidPrompt)
@@ -127,6 +128,14 @@ func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error
 		return ActionResult{}, err
 	}
 	defer s.finishPending(a)
+	if !validStartConfig(startConfig) {
+		s.abortAttempt(a)
+		return ActionResult{}, ErrInvalidConfig
+	}
+	snapshot := s.config.Clone()
+	snapshot.Model = startConfig.Selection
+	snapshot.Agent.Model = startConfig.Selection
+	snapshot.Agent.Options = map[string]string{codexmodel.ReasoningEffortOptionKey: startConfig.ReasoningEffort}
 
 	tailCtx, tailCancel := context.WithCancel(a.ctx)
 	a.cancelTail = tailCancel
@@ -143,7 +152,7 @@ func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error
 		s.abortAttempt(a)
 		return ActionResult{}, err
 	}
-	handle, err := s.runtime.Start(a.ctx, agentruntime.Request{SessionID: s.sessionID, Message: agentruntime.UserMessage{Content: normalized}, Config: s.config})
+	handle, err := s.runtime.Start(a.ctx, agentruntime.Request{SessionID: s.sessionID, Message: agentruntime.UserMessage{Content: normalized}, Config: snapshot})
 	if err != nil {
 		if errors.Is(err, session.ErrSessionBusy) {
 			return s.toWaiting(a)
@@ -160,6 +169,11 @@ func (s *service) Start(ctx context.Context, prompt string) (ActionResult, error
 	}
 	a.stopCallerCancel()
 	return s.publishAdmitted(a, handle, events, normalized)
+}
+
+func validStartConfig(cfg StartConfig) bool {
+	return codexmodel.ValidateSelection(cfg.Selection) == nil &&
+		codexmodel.ValidReasoningEffort(cfg.ReasoningEffort)
 }
 
 func (s *service) beginAttempt(caller context.Context, from, to lifecycle) (*attempt, error) {

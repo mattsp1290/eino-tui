@@ -7,7 +7,7 @@ Prompts and responses are sent to the Codex service. Durable conversation rows, 
 ## Requirements
 
 - macOS or Linux; Windows is not supported yet.
-- Go 1.26.3 to build from source.
+- Go 1.26.8 to build from source.
 - An interactive terminal, writable user config/state directories, and an eligible ChatGPT subscription. Local login status does not prove plan eligibility, model availability, or remaining quota.
 
 ## Login and launch
@@ -28,13 +28,15 @@ Authorize this application using the device flow, then launch it from the worksp
 
 Device login is the only supported login flow. `status` reads local credential state without refreshing or contacting the service. On a successful read, its only possible status text is `logged in`, `logged in; refresh required on next request`, or `not logged in`. A credential-read failure prints the fixed authentication diagnostic to standard error and exits with status 6.
 
-The default model is `gpt-5.5`. Choose another canonical Codex-admitted model for one process with:
+The startup model is `gpt-5.5`. Choose another canonical Codex-admitted startup model with:
 
 ```sh
 ./eino-tui --model gpt-5.6
 ```
 
-The model is fixed for that process and its durable run snapshots. There is no silent fallback if the service or account rejects it.
+While chat is idle, press `Alt+M` to load the picker-visible model catalog for the authenticated account. The first open fetches the catalog lazily; later opens reuse the successful process-local result until `R` refreshes it. Use arrows or `j`/`k` to highlight a model, `Tab`/`Shift+Tab` to choose reasoning effort, and `Enter` to apply the pair to later turns. `Esc` cancels or closes the selector without changing the draft or applied pair.
+
+The picker currently exposes only `low`, `medium`, and `high`, the reasoning values documented by the pinned Codex provider. Catalog availability depends on the authenticated account and network. A load failure is recoverable inside the selector and does not prevent continued use of the startup model. Selection and successful catalog cache are process-local: relaunch restores `--model` (or `gpt-5.5`) with `medium` effort. There is no silent fallback if the service later rejects an applied pair.
 
 Run the complete credential-free quality gate with:
 
@@ -48,6 +50,12 @@ make check
 | --- | --- |
 | Enter | Submit a nonblank prompt while idle |
 | Alt+Enter | Insert a newline |
+| Alt+M | Open the idle-only account model and reasoning selector |
+| Up/Down or J/K | Move the selector highlight without applying it |
+| Tab / Shift+Tab | Cycle the highlighted model's supported reasoning efforts |
+| R | Refresh or retry the catalog while the selector is open |
+| Enter (selector) | Apply the highlighted pair to subsequent turns |
+| Esc (selector) | Cancel loading or close without applying |
 | Esc | Interrupt a response that is starting or streaming |
 | Ctrl+C | Quit, interrupting and durably settling an active turn first |
 | Ctrl+D | Quit only while idle, discarding any unsent draft |
@@ -88,8 +96,8 @@ The terminal never renders tokens, account identifiers, auth paths, raw provider
 
 ## Scope
 
-This is terminal chat, not an autonomous coding agent. It has no tools, filesystem or shell access, permission prompts, provider picker, reasoning display, usage/cost display, or coding-agent autonomy.
+This is terminal chat, not an autonomous coding agent. It has no tools, filesystem or shell access, permission prompts, provider picker, private reasoning-content display, usage/cost display, or coding-agent autonomy. Each admitted turn freezes its own model and reasoning selection; changing the picker later cannot reconfigure an active or completed turn.
 
 ## Manual subscription smoke test
 
-Automated tests use scripted HTTP and never read the default credential path. Before release, follow the [manual subscription smoke test](docs/manual-subscription-smoke.md): check status, complete device login, observe multiple streaming updates over two related turns, interrupt and continue, then relaunch from the workspace and a symlink spelling to confirm transcript continuity. Record only pass/fail, commit, provider version, model, OS, and UTC time—never credentials, account data, prompt/response bodies, or auth paths.
+Automated tests use scripted HTTP and never read the default credential path. Before release, follow the [manual subscription smoke test](docs/manual-subscription-smoke.md): verify the lazy live catalog and explicit refresh, use two public model/effort pairs across related turns, interrupt and continue, then relaunch from the workspace and a symlink spelling to confirm transcript continuity and process-local selection reset. Record only the permitted public version and pass/fail fields—never credentials, account data, catalog bodies, prompt/response bodies, private reasoning, or auth paths.

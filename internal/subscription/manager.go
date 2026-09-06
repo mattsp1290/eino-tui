@@ -28,13 +28,23 @@ const (
 
 var ErrAuth = errors.New("Codex authentication failed")
 
+var ErrCatalogUnavailable = errors.New("Codex model catalog is unavailable")
+
+// CatalogCompatibilityVersion is the OpenAI Codex catalog compatibility
+// baseline, not an eino-tui or Go module version.
+const CatalogCompatibilityVersion = "0.153.2"
+
 type authClient interface {
 	LoginDevice(context.Context) (codexauth.Credentials, error)
 	Status(context.Context) (codexauth.StatusInfo, error)
 	HTTPClient(context.Context) (*http.Client, error)
+	ListModels(context.Context, string) ([]codexauth.ModelCatalogEntry, error)
 }
 
-type Manager struct{ client authClient }
+type Manager struct {
+	client authClient
+	gate   chan struct{}
+}
 
 type clientFactory func(codexauth.Options) authClient
 
@@ -66,10 +76,16 @@ func newWithFactory(deviceOutput io.Writer, factory clientFactory) *Manager {
 			return nil
 		},
 	})
-	return &Manager{client: client}
+	return managerWithClient(client)
 }
 
-func newManager(client authClient) *Manager { return &Manager{client: client} }
+func newManager(client authClient) *Manager { return managerWithClient(client) }
+
+func managerWithClient(client authClient) *Manager {
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	return &Manager{client: client, gate: gate}
+}
 
 func (m *Manager) LoginDevice(ctx context.Context) error {
 	if m == nil || m.client == nil {
@@ -111,12 +127,70 @@ func (m *Manager) HTTPClient(ctx context.Context) (*http.Client, error) {
 		if client == nil {
 			return nil, ErrAuth
 		}
-		return client, nil
+		wrapped := *client
+		transport := client.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		wrapped.Transport = gatedTransport{manager: m, transport: transport}
+		return &wrapped, nil
 	}
 	if errors.Is(err, codexauth.ErrNotLoggedIn) {
 		return nil, codexauth.ErrNotLoggedIn
 	}
 	return nil, ErrAuth
+}
+
+// ListModels fetches and normalizes the authenticated account catalog.
+func (m *Manager) ListModels(ctx context.Context) ([]codexmodel.CatalogEntry, error) {
+	if m == nil || m.client == nil || m.gate == nil {
+		return nil, ErrCatalogUnavailable
+	}
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	remote, err := m.client.ListModels(ctx, CatalogCompatibilityVersion)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, ErrCatalogUnavailable
+	}
+	return codexmodel.NormalizeCatalog(remote), nil
+}
+
+func (m *Manager) acquire(ctx context.Context) (func(), error) {
+	if m == nil || m.gate == nil {
+		return nil, ErrCatalogUnavailable
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-m.gate:
+		return func() { m.gate <- struct{}{} }, nil
+	}
+}
+
+type gatedTransport struct {
+	manager   *Manager
+	transport http.RoundTripper
+}
+
+func (g gatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil || g.manager == nil || g.transport == nil {
+		return nil, ErrAuth
+	}
+	release, err := g.manager.acquire(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return g.transport.RoundTrip(req)
 }
 
 func validDeviceValue(value string, limit int) bool {

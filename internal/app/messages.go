@@ -1,6 +1,9 @@
 package app
 
-import "github.com/mattsp1290/eino-tui/internal/runtimeui"
+import (
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
+	"github.com/mattsp1290/eino-tui/internal/runtimeui"
+)
 
 type loadedMsg struct {
 	snapshot runtimeui.Snapshot
@@ -23,3 +26,9 @@ type recoveredMsg struct {
 }
 type recoveryDueMsg struct{}
 type fatalMsg struct{}
+
+type catalogLoadedMsg struct {
+	generation uint64
+	entries    []codexmodel.CatalogEntry
+	err        error
+}

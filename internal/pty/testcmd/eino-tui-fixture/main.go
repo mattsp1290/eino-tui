@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,6 +15,7 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/app"
 	"github.com/mattsp1290/eino-tui/internal/cli"
+	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 	"github.com/mattsp1290/eino-tui/internal/subscription"
@@ -22,11 +24,13 @@ import (
 type fixtureSubscription struct {
 	output io.Writer
 	status subscription.Status
+	mode   string
+	calls  *atomic.Int32
 }
 
 func openFixture(ctx context.Context, database string, id session.ID, workspace string, resolver model.Resolver) (runtimeui.Service, error) {
 	return runtimeui.Open(ctx, database, id, workspace, runtimeui.Config{
-		Resolver: resolver, Selection: model.Selection{ProviderID: demomodel.ProviderID, ModelID: demomodel.ModelID},
+		Resolver:  resolver,
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
 }
@@ -40,6 +44,23 @@ func (s fixtureSubscription) Status(context.Context) (subscription.Status, error
 }
 func (fixtureSubscription) HTTPClient(context.Context) (*http.Client, error) {
 	return &http.Client{}, nil
+}
+func (s fixtureSubscription) ListModels(ctx context.Context) ([]codexmodel.CatalogEntry, error) {
+	call := s.calls.Add(1)
+	if (s.mode == "--block-first-catalog" && call == 1) || (s.mode == "--block-catalog-refresh" && call > 1) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return []codexmodel.CatalogEntry{
+		{
+			ModelID: "gpt-5.5", DisplayName: "GPT-5.5 Fixture", Priority: 1, DefaultEffort: "medium",
+			SupportedEfforts: []codexmodel.ReasoningEffort{{ID: "low", Description: "Fast"}, {ID: "medium", Description: "Balanced"}, {ID: "high", Description: "Deep"}},
+		},
+		{
+			ModelID: "gpt-5.6", DisplayName: "GPT-5.6 Fixture", Priority: 2, DefaultEffort: "high",
+			SupportedEfforts: []codexmodel.ReasoningEffort{{ID: "medium", Description: "Balanced"}, {ID: "high", Description: "Deep"}},
+		},
+	}, nil
 }
 
 type panicProgram struct{}
@@ -86,20 +107,34 @@ func main() {
 		mode = os.Args[1]
 	}
 	deps := cli.ProductionDependencies()
+	catalogCalls := &atomic.Int32{}
 	deps.NewSubscription = func(output io.Writer) cli.Subscription {
-		return fixtureSubscription{output: output, status: subscription.LoggedIn}
+		return fixtureSubscription{output: output, status: subscription.LoggedIn, mode: mode, calls: catalogCalls}
 	}
 	deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-		return openFixture(ctx, db, id, workspace, demomodel.Resolver(nil))
+		return openFixture(ctx, db, id, workspace, demomodel.DynamicResolver(nil))
 	}
 	switch mode {
+	case "--block-first-catalog", "--block-catalog-refresh":
+		// Catalog behavior is provided by fixtureSubscription; keep chat defaults.
 	case "--logged-out":
 		deps.NewSubscription = func(output io.Writer) cli.Subscription {
-			return fixtureSubscription{output: output, status: subscription.NotLoggedIn}
+			return fixtureSubscription{output: output, status: subscription.NotLoggedIn, mode: mode, calls: catalogCalls}
 		}
 	case "--long":
+		var waits atomic.Int32
 		deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-			return openFixture(ctx, db, id, workspace, demomodel.Resolver(demomodel.TimerWait(10*time.Second)))
+			return openFixture(ctx, db, id, workspace, demomodel.DynamicResolver(func(ctx context.Context) error {
+				if waits.Add(1) == 1 {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(10 * time.Second):
+					return nil
+				}
+			}))
 		}
 	case "--program-panic":
 		deps.NewProgram = func(tea.Model, context.Context, io.Reader, io.Writer) cli.Program { return panicProgram{} }
@@ -113,7 +148,7 @@ func main() {
 		}
 	case "--model-error":
 		deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
-			return openFixture(ctx, db, id, workspace, demomodel.ErrorResolver(func(context.Context) error { return nil }, errors.New("secret prompt /tmp/private\x1b]0;leak\a")))
+			return openFixture(ctx, db, id, workspace, demomodel.DynamicErrorResolver(func(context.Context) error { return nil }, errors.New("secret prompt /tmp/private\x1b]0;leak\a")))
 		}
 	case "--app-init-panic", "--app-update-panic", "--app-view-panic", "--app-command-panic":
 		where := map[string]string{"--app-init-panic": "init", "--app-update-panic": "update", "--app-view-panic": "view", "--app-command-panic": "command"}[mode]

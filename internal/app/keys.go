@@ -9,8 +9,12 @@ import (
 )
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.picker.mode != pickerClosed {
+		return m.handlePickerKey(msg)
+	}
 	switch msg.Keystroke() {
 	case "ctrl+c":
+		m.cancelCatalogRequest()
 		return m, func() tea.Msg { return tea.Quit() }
 	case "ctrl+d":
 		if m.snapshot.Phase == runtimeui.PhaseIdle {
@@ -20,6 +24,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.snapshot.Phase == runtimeui.PhaseStarting || m.snapshot.Phase == runtimeui.PhaseRunning {
 			return m, m.interruptCmd()
+		}
+		return m, nil
+	case "alt+m":
+		if m.snapshot.Phase == runtimeui.PhaseIdle {
+			return m, m.openPicker()
 		}
 		return m, nil
 	case "enter":
@@ -36,7 +45,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot.Phase = runtimeui.PhaseStarting
 		m.snapshot.Notice = ""
-		return m, m.startCmd(prompt)
+		cfg := runtimeui.StartConfig{Selection: m.selected.selection, ReasoningEffort: m.selected.effort}
+		return m, m.startCmd(prompt, cfg)
 	}
 	if m.snapshot.Phase != runtimeui.PhaseIdle {
 		return m, nil
