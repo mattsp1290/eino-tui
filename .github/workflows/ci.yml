@@ -22,6 +22,14 @@ jobs:
         with:
           go-version: 1.26.8
           cache: true
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ripgrep
       - name: Formatting
         run: make fmt-check
       - name: Module graph and exact pins

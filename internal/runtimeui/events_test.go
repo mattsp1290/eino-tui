@@ -186,9 +186,31 @@ func TestEventAccumulatorToolCapIsExact(t *testing.T) {
 	}
 	call := session.ToolCall{ID: "overflow", SessionID: "s", RunID: "r", MessageID: "overflow-message", Name: "file_list", Input: json.RawMessage(`{}`), Status: session.ToolCallPending}
 	event := session.EventRecord{ID: "overflow-event", Kind: agentruntime.EventToolCallUpdated, SessionID: "s", RunID: "r", MessageID: "overflow-message", ToolCallID: "overflow", ToolTransition: session.ToolTransitionPending}
+	before := a.budget
 	a.accept(context.Background(), eventToolStore{call: call}, event, "s", "r")
-	if !a.resync || a.toolCount != MaxLiveToolActivities {
-		t.Fatalf("resync=%v count=%d", a.resync, a.toolCount)
+	if !a.resync || a.budget != before || len(a.messages) != MaxLiveToolActivities || len(a.toolIndex) != MaxLiveToolActivities {
+		t.Fatalf("resync=%v count=%d", a.resync, a.budget.toolCount)
+	}
+}
+
+func TestEventAccumulatorTextOverflowPreservesSeedAndLiveState(t *testing.T) {
+	for _, messageID := range []session.MessageID{"live", "new-message"} {
+		t.Run(string(messageID), func(t *testing.T) {
+			a := newEventAccumulator([]Message{{ID: "seed", Role: RoleAssistant, Content: strings.Repeat("s", textsafe.MaxDisplayBytes-1)}})
+			event := session.EventRecord{Kind: agentruntime.EventMessageDelta, SessionID: "s", RunID: "r", MessageID: "live", Payload: []byte(`{"content":"x"}`)}
+			if update := a.accept(context.Background(), nil, event, "s", "r"); !update.changed || a.resync {
+				t.Fatal("text at the aggregate limit was rejected")
+			}
+			before := a.budget
+			event.MessageID = messageID
+			event.Payload = []byte(`{"content":"y"}`)
+			if update := a.accept(context.Background(), nil, event, "s", "r"); update.changed || !a.resync {
+				t.Fatal("text over the aggregate limit was accepted")
+			}
+			if a.budget != before || len(a.messages) != 2 || a.messages[1].Content != "x" || len(a.rawByMessage) != 1 || a.rawByMessage["live"] != "x" {
+				t.Fatal("rejected text partially mutated live state")
+			}
+		})
 	}
 }
 
@@ -196,8 +218,8 @@ func TestEventAccumulatorDisplayByteCapsAreExact(t *testing.T) {
 	toolBase := ToolActivity{ID: "call", Name: "x", Status: ToolPending}
 	toolBase.Subject = strings.Repeat("s", MaxLiveToolDisplayBytes-len(toolBase.Name)-len(toolBase.Status))
 	toolSeed := []Message{{ID: "message", Role: RoleAssistant, Tools: []ToolActivity{toolBase}}}
-	if atCap := newEventAccumulator(toolSeed); atCap.resync || atCap.toolBytes != MaxLiveToolDisplayBytes {
-		t.Fatalf("tool bytes at cap: bytes=%d resync=%v", atCap.toolBytes, atCap.resync)
+	if atCap := newEventAccumulator(toolSeed); atCap.resync || atCap.budget.toolBytes != MaxLiveToolDisplayBytes {
+		t.Fatalf("tool bytes at cap: bytes=%d resync=%v", atCap.budget.toolBytes, atCap.resync)
 	}
 	toolSeed[0].Tools[0].Subject += "x"
 	if overCap := newEventAccumulator(toolSeed); !overCap.resync {
@@ -205,8 +227,8 @@ func TestEventAccumulatorDisplayByteCapsAreExact(t *testing.T) {
 	}
 
 	textSeed := []Message{{ID: "message", Role: RoleAssistant, Content: strings.Repeat("t", textsafe.MaxDisplayBytes)}}
-	if atCap := newEventAccumulator(textSeed); atCap.resync || atCap.textBytes != textsafe.MaxDisplayBytes {
-		t.Fatalf("text bytes at cap: bytes=%d resync=%v", atCap.textBytes, atCap.resync)
+	if atCap := newEventAccumulator(textSeed); atCap.resync || atCap.budget.textBytes != textsafe.MaxDisplayBytes {
+		t.Fatalf("text bytes at cap: bytes=%d resync=%v", atCap.budget.textBytes, atCap.resync)
 	}
 	textSeed[0].Content += "x"
 	if overCap := newEventAccumulator(textSeed); !overCap.resync {

@@ -21,28 +21,30 @@ type accumulatorUpdate struct {
 	changed  bool
 }
 
+type toolPosition struct {
+	message  int
+	activity int
+}
+
 type eventAccumulator struct {
 	messages      []Message
 	messageIndex  map[session.MessageID]int
-	callMessage   map[session.ToolCallID]session.MessageID
+	toolIndex     map[session.ToolCallID]toolPosition
 	rawByMessage  map[session.MessageID]string
 	seededMessage map[session.MessageID]bool
-	toolCount     int
-	toolBytes     int
-	textBytes     int
+	budget        liveMessageBudget
 	resync        bool
 }
 
 func newEventAccumulator(seed []Message) eventAccumulator {
 	a := eventAccumulator{}
 	a.ensureMaps()
-	var budget liveMessageBudget
 	for _, source := range seed {
 		messageID := session.MessageID(source.ID)
 		if messageID == "" || source.Role != RoleAssistant {
 			continue
 		}
-		if !budget.admit(source) {
+		if !a.budget.admit(source) {
 			a.resync = true
 			break
 		}
@@ -51,16 +53,14 @@ func newEventAccumulator(seed []Message) eventAccumulator {
 		a.messageIndex[messageID] = len(a.messages)
 		a.messages = append(a.messages, message)
 		a.seededMessage[messageID] = true
-		a.textBytes += len(message.Content)
-		for _, activity := range message.Tools {
+		for i, activity := range message.Tools {
 			callID := session.ToolCallID(activity.ID)
-			if callID == "" || a.callMessage[callID] != "" {
+			_, exists := a.toolIndex[callID]
+			if callID == "" || exists {
 				a.resync = true
 				continue
 			}
-			a.callMessage[callID] = messageID
-			a.toolCount++
-			a.toolBytes += len(activity.Name) + len(activity.Subject) + len(activity.Status)
+			a.toolIndex[callID] = toolPosition{message: a.messageIndex[messageID], activity: i}
 		}
 	}
 	return a
@@ -69,10 +69,20 @@ func newEventAccumulator(seed []Message) eventAccumulator {
 func (a *eventAccumulator) ensureMaps() {
 	if a.messageIndex == nil {
 		a.messageIndex = make(map[session.MessageID]int)
-		a.callMessage = make(map[session.ToolCallID]session.MessageID)
+		a.toolIndex = make(map[session.ToolCallID]toolPosition)
 		a.rawByMessage = make(map[session.MessageID]string)
 		a.seededMessage = make(map[session.MessageID]bool)
 	}
+}
+
+func (a *eventAccumulator) messageFor(id session.MessageID) *Message {
+	index, exists := a.messageIndex[id]
+	if !exists {
+		index = len(a.messages)
+		a.messageIndex[id] = index
+		a.messages = append(a.messages, Message{ID: string(id), Role: RoleAssistant, Status: StatusComplete})
+	}
+	return &a.messages[index]
 }
 
 func (a *eventAccumulator) accept(ctx context.Context, store toolCallStore, event session.EventRecord, sessionID session.ID, runID session.RunID) accumulatorUpdate {
@@ -112,23 +122,16 @@ func (a *eventAccumulator) acceptMessageDelta(event session.EventRecord) accumul
 	oldDisplay := textsafe.Display(raw)
 	raw += payload.Content
 	newDisplay := textsafe.Display(raw)
-	prospective := a.textBytes - len(oldDisplay) + len(newDisplay)
-	if prospective > textsafe.MaxDisplayBytes {
+	if !a.budget.reserve(len(newDisplay)-len(oldDisplay), 0, 0) {
 		a.resync = true
 		return accumulatorUpdate{}
 	}
 	a.rawByMessage[event.MessageID] = raw
-	index, ok := a.messageIndex[event.MessageID]
-	if !ok {
-		index = len(a.messages)
-		a.messageIndex[event.MessageID] = index
-		a.messages = append(a.messages, Message{ID: string(event.MessageID), Role: RoleAssistant, Status: StatusComplete})
-	}
-	if a.messages[index].Content == newDisplay {
+	message := a.messageFor(event.MessageID)
+	if message.Content == newDisplay {
 		return accumulatorUpdate{}
 	}
-	a.messages[index].Content = newDisplay
-	a.textBytes = prospective
+	message.Content = newDisplay
 	return accumulatorUpdate{messages: cloneMessages(a.messages), changed: true}
 }
 
@@ -149,55 +152,34 @@ func (a *eventAccumulator) acceptToolCall(ctx context.Context, store toolCallSto
 		a.resync = true
 		return accumulatorUpdate{}
 	}
-	if owner := a.callMessage[event.ToolCallID]; owner != "" {
-		if owner != event.MessageID {
+	if position, exists := a.toolIndex[event.ToolCallID]; exists {
+		message := &a.messages[position.message]
+		old := message.Tools[position.activity]
+		if message.ID != string(event.MessageID) ||
+			toolStatusRank(activity.Status) < toolStatusRank(old.Status) ||
+			toolStatusRank(old.Status) == 3 && activity.Status != old.Status ||
+			activity.Name != old.Name || activity.Subject != old.Subject {
 			a.resync = true
 			return accumulatorUpdate{}
 		}
-		message := &a.messages[a.messageIndex[owner]]
-		for i := range message.Tools {
-			if message.Tools[i].ID != activity.ID {
-				continue
-			}
-			old := message.Tools[i]
-			if toolStatusRank(activity.Status) < toolStatusRank(old.Status) || toolStatusRank(old.Status) == 3 && activity.Status != old.Status || activity.Name != old.Name || activity.Subject != old.Subject {
-				a.resync = true
-				return accumulatorUpdate{}
-			}
-			if activity == old {
-				return accumulatorUpdate{}
-			}
-			prospective := a.toolBytes - len(old.Name) - len(old.Subject) - len(old.Status) + len(activity.Name) + len(activity.Subject) + len(activity.Status)
-			if prospective > MaxLiveToolDisplayBytes {
-				a.resync = true
-				return accumulatorUpdate{}
-			}
-			message.Tools[i] = activity
-			a.toolBytes = prospective
-			return accumulatorUpdate{messages: cloneMessages(a.messages), changed: true}
+		if activity == old {
+			return accumulatorUpdate{}
 		}
-		a.resync = true
-		return accumulatorUpdate{}
+		// Name and subject are immutable, so only status bytes can change.
+		if !a.budget.reserve(0, 0, len(activity.Status)-len(old.Status)) {
+			a.resync = true
+			return accumulatorUpdate{}
+		}
+		message.Tools[position.activity] = activity
+	} else {
+		if !a.budget.reserve(0, 1, len(activity.Name)+len(activity.Subject)+len(activity.Status)) {
+			a.resync = true
+			return accumulatorUpdate{}
+		}
+		message := a.messageFor(event.MessageID)
+		a.toolIndex[event.ToolCallID] = toolPosition{message: a.messageIndex[event.MessageID], activity: len(message.Tools)}
+		message.Tools = append(message.Tools, activity)
 	}
-	if a.toolCount >= MaxLiveToolActivities {
-		a.resync = true
-		return accumulatorUpdate{}
-	}
-	addedBytes := len(activity.Name) + len(activity.Subject) + len(activity.Status)
-	if a.toolBytes+addedBytes > MaxLiveToolDisplayBytes {
-		a.resync = true
-		return accumulatorUpdate{}
-	}
-	index, exists := a.messageIndex[event.MessageID]
-	if !exists {
-		index = len(a.messages)
-		a.messageIndex[event.MessageID] = index
-		a.messages = append(a.messages, Message{ID: string(event.MessageID), Role: RoleAssistant, Status: StatusComplete})
-	}
-	a.messages[index].Tools = append(a.messages[index].Tools, activity)
-	a.callMessage[event.ToolCallID] = event.MessageID
-	a.toolCount++
-	a.toolBytes += addedBytes
 	return accumulatorUpdate{messages: cloneMessages(a.messages), changed: true}
 }
 
