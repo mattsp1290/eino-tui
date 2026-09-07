@@ -15,6 +15,42 @@ import (
 	"github.com/mattsp1290/eino-tui/internal/platform"
 )
 
+type trackingMount struct {
+	deactivated int
+	closed      int
+	err         error
+}
+
+func (m *trackingMount) Deactivate() { m.deactivated++ }
+func (m *trackingMount) Close(context.Context) error {
+	m.closed++
+	return m.err
+}
+
+func TestServiceOwnsMountCleanupOnce(t *testing.T) {
+	runtime := orchestratorFunc{
+		start: func(context.Context, agentruntime.Request) (agentruntime.Handle, error) {
+			return nil, errors.New("unused")
+		},
+		resume: func(context.Context, session.RunID) (agentruntime.Handle, error) { return nil, errors.New("unused") },
+	}
+	chat := newOrchestratorTestService(t, runtime)
+	mountErr := errors.New("mount cleanup")
+	mount := &trackingMount{err: mountErr}
+	chat.mount = mount
+	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := chat.Close(deadline); !errors.Is(err, mountErr) {
+		t.Fatalf("close error=%v", err)
+	}
+	if err := chat.Close(deadline); !errors.Is(err, mountErr) {
+		t.Fatalf("repeated close error=%v", err)
+	}
+	if mount.deactivated != 1 || mount.closed != 1 {
+		t.Fatalf("deactivated=%d closed=%d", mount.deactivated, mount.closed)
+	}
+}
+
 func TestServiceSlowConsumerCannotBlockSettlementOrClose(t *testing.T) {
 	ctx := context.Background()
 	workspace := t.TempDir()

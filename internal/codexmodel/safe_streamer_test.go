@@ -107,7 +107,7 @@ func TestSafeProviderStateStreamerSanitizesImmediateAndReceiveErrors(t *testing.
 	}
 }
 
-func TestSafeProviderStateStreamerRejectsToolCalls(t *testing.T) {
+func TestSafeProviderStateStreamerPassesToolCalls(t *testing.T) {
 	t.Parallel()
 	const secret = "secret_tool_name"
 	reader := schema.StreamReaderFromArray([]agentmodel.StreamDelta{{
@@ -120,9 +120,9 @@ func TestSafeProviderStateStreamerRejectsToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	_, err = stream.Recv()
-	if err == nil || err.Error() != "Codex returned an unsupported response" || strings.Contains(err.Error(), secret) || !errors.Is(err, agentmodel.ErrProviderRejected) {
-		t.Fatalf("error = %v", err)
+	delta, err := stream.Recv()
+	if err != nil || delta.Message == nil || len(delta.Message.ToolCalls) != 1 || delta.Message.ToolCalls[0].Function.Name != secret || delta.Message.ToolCalls[0].Function.Arguments != `{"secret":"value"}` {
+		t.Fatalf("delta = %#v, error = %v", delta, err)
 	}
 }
 

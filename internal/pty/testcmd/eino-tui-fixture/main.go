@@ -136,6 +136,10 @@ func main() {
 				}
 			}))
 		}
+	case "--tool-read":
+		deps.OpenService = func(ctx context.Context, db string, id session.ID, workspace string, _ runtimeui.Config) (runtimeui.Service, error) {
+			return openFixture(ctx, db, id, workspace, demomodel.DynamicToolResolver(nil))
+		}
 	case "--program-panic":
 		deps.NewProgram = func(tea.Model, context.Context, io.Reader, io.Writer) cli.Program { return panicProgram{} }
 	case "--program-error":

@@ -33,13 +33,6 @@ func (s *safeProviderStateStreamer) StreamProvider(ctx context.Context, request 
 }
 
 func safeProviderDelta(delta agentmodel.StreamDelta) (agentmodel.StreamDelta, error) {
-	if delta.Message != nil && len(delta.Message.ToolCalls) != 0 {
-		return agentmodel.StreamDelta{}, agentmodel.Error{
-			Code:    "codex_unexpected_tool_call",
-			Message: "Codex returned an unsupported response",
-			Cause:   agentmodel.ErrProviderRejected,
-		}
-	}
 	return delta, nil
 }
 

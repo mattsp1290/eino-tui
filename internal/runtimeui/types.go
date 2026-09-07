@@ -12,39 +12,55 @@ import (
 type Role string
 type Status string
 type Phase string
+type ToolStatus string
 
 const (
-	RoleUser             Role   = "user"
-	RoleAssistant        Role   = "assistant"
-	RoleNotice           Role   = "notice"
-	StatusComplete       Status = "complete"
-	StatusInterrupted    Status = "interrupted"
-	StatusFailed         Status = "failed"
-	PhaseIdle            Phase  = "idle"
-	PhaseStarting        Phase  = "starting"
-	PhaseRunning         Phase  = "running"
-	PhaseRecoveryWaiting Phase  = "recovery-waiting"
-	PhaseRecovering      Phase  = "recovering"
-	PhaseClosing         Phase  = "closing"
+	RoleUser             Role       = "user"
+	RoleAssistant        Role       = "assistant"
+	RoleNotice           Role       = "notice"
+	StatusComplete       Status     = "complete"
+	StatusInterrupted    Status     = "interrupted"
+	StatusFailed         Status     = "failed"
+	PhaseIdle            Phase      = "idle"
+	PhaseStarting        Phase      = "starting"
+	PhaseRunning         Phase      = "running"
+	PhaseRecoveryWaiting Phase      = "recovery-waiting"
+	PhaseRecovering      Phase      = "recovering"
+	PhaseClosing         Phase      = "closing"
+	ToolPending          ToolStatus = "pending"
+	ToolRunning          ToolStatus = "running"
+	ToolCompleted        ToolStatus = "completed"
+	ToolFailed           ToolStatus = "failed"
+	ToolInterrupted      ToolStatus = "interrupted"
 )
+
+// ToolActivity is the bounded, display-safe projection of a durable tool call.
+// It intentionally contains no output, error, metadata, or raw arguments.
+type ToolActivity struct {
+	ID      string
+	Name    string
+	Subject string
+	Status  ToolStatus
+}
 
 type Message struct {
 	ID      string
 	Role    Role
 	Content string
 	Status  Status
+	Tools   []ToolActivity
 }
 
 type Snapshot struct {
-	RunID         session.RunID
-	Version       uint64
-	Terminal      bool
-	Resync        bool
-	Messages      []Message
-	LiveAssistant string
-	Phase         Phase
-	Notice        string
-	RecoveryAt    time.Time
+	RunID        session.RunID
+	Version      uint64
+	Terminal     bool
+	Resync       bool
+	Messages     []Message
+	LiveMessages []Message
+	Phase        Phase
+	Notice       string
+	RecoveryAt   time.Time
 }
 
 type Run interface {
@@ -81,12 +97,13 @@ type Service interface {
 }
 
 var (
-	ErrBusy          = errors.New("chat is busy")
-	ErrInvalidPrompt = errors.New("invalid prompt")
-	ErrInvalidConfig = errors.New("invalid run configuration")
-	ErrClosing       = errors.New("chat is closing")
-	ErrUnavailable   = errors.New("chat is unavailable")
-	ErrCloseTimeout  = errors.New("chat shutdown timed out")
+	ErrBusy             = errors.New("chat is busy")
+	ErrInvalidPrompt    = errors.New("invalid prompt")
+	ErrInvalidConfig    = errors.New("invalid run configuration")
+	ErrClosing          = errors.New("chat is closing")
+	ErrUnavailable      = errors.New("chat is unavailable")
+	ErrCloseTimeout     = errors.New("chat shutdown timed out")
+	ErrToolsUnavailable = errors.New("read-only workspace tools unavailable")
 )
 
 const (

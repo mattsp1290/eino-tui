@@ -64,7 +64,7 @@ func TestSequentialTurnsCancelEveryTailSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat := newService(ctx, store, tail, orchestrator, platform.WorkspaceSessionID(workspace), snapshot)
+	chat := newService(ctx, store, tail, orchestrator, nil, platform.WorkspaceSessionID(workspace), snapshot)
 	for index := 0; index < 10; index++ {
 		result, err := chat.Start(ctx, "turn", fixtureStartConfig())
 		if err != nil {

@@ -238,6 +238,51 @@ func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
 	}
 }
 
+func TestFixtureReadOnlyToolActivityAndReplay(t *testing.T) {
+	temp := t.TempDir()
+	fixtureBinary := filepath.Join(temp, "fixture")
+	buildBinary(t, fixtureBinary, "./internal/pty/testcmd/eino-tui-fixture")
+	workspace := t.TempDir()
+	const privateOutput = "FIXTURE_CONTENT_MUST_NOT_BE_DIRECTLY_RENDERED"
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte(privateOutput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	process := startTerminal(t, fixtureBinary, []string{"--tool-read"}, workspace, state)
+	process.waitText(t, "Codex subscription", 3*time.Second)
+	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 8, Cols: 18}); err != nil {
+		t.Fatal(err)
+	}
+	process.write(t, "inspect fixture\r")
+	process.waitText(t, "file_read", 3*time.Second)
+	process.waitText(t, "completed", 3*time.Second)
+	if strings.Contains(process.text(), privateOutput) {
+		t.Fatal("tool output was directly rendered")
+	}
+	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 28, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+	process.waitText(t, "read successfully", 3*time.Second)
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if output := process.text(); !strings.Contains(output, "\x1b[?1049l") || strings.Contains(output, privateOutput) {
+		t.Fatalf("terminal was not restored or output leaked: %q", output)
+	}
+
+	replay := startTerminal(t, fixtureBinary, []string{"--tool-read"}, workspace, state)
+	replay.waitText(t, "file_read", 3*time.Second)
+	replay.waitText(t, "completed", 3*time.Second)
+	if strings.Contains(replay.text(), privateOutput) {
+		t.Fatal("replayed tool output was directly rendered")
+	}
+	replay.write(t, "\x04")
+	if err := replay.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("replay exit: %v", err)
+	}
+}
+
 func TestModelSelectorLoadsLazilyAndCancelKeepsPromptUsable(t *testing.T) {
 	temp := t.TempDir()
 	fixture := filepath.Join(temp, "fixture")

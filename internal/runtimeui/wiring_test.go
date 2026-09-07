@@ -2,6 +2,7 @@ package runtimeui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,5 +35,23 @@ func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 				t.Fatalf("SQLite touched before validation: %v", err)
 			}
 		})
+	}
+}
+
+func TestOpenFailsClosedWhenReadOnlyCatalogIsUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	database := filepath.Join(t.TempDir(), "catalog.db")
+	cfg := Config{Resolver: demomodel.DynamicResolver(nil), AgentName: "fixture", SystemPrompt: "test"}
+	service, err := Open(context.Background(), database, "session", t.TempDir(), cfg)
+	if service != nil || !errors.Is(err, ErrToolsUnavailable) {
+		t.Fatalf("service=%v error=%v", service, err)
+	}
+	// A second SQLite open proves the failed constructor released its handle.
+	store, openErr := os.OpenFile(database, os.O_RDWR, 0)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if closeErr := store.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 }

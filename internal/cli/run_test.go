@@ -202,6 +202,19 @@ func TestRunExitPoliciesAndRedaction(t *testing.T) {
 	}
 }
 
+func TestRunToolCatalogFailureUsesFixedDiagnostic(t *testing.T) {
+	service := &testService{}
+	deps := testDeps(t, service, &testProgram{})
+	deps.OpenService = func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
+		return nil, fmt.Errorf("%w: TOKEN /private/workspace/missing-rg", runtimeui.ErrToolsUnavailable)
+	}
+	var stderr bytes.Buffer
+	code := Run(context.Background(), nil, strings.NewReader(""), io.Discard, &stderr, deps)
+	if code != ExitStartup || stderr.String() != toolsDiagnostic+"\n" || strings.Contains(stderr.String(), "TOKEN") || strings.Contains(stderr.String(), "/private/") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
 func TestRunHelpAndVersionDoNotInitialize(t *testing.T) {
 	for _, arg := range []string{"--help", "--version"} {
 		var out bytes.Buffer

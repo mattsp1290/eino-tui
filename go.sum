@@ -54,6 +54,8 @@ github.com/aymanbagabas/go-udiff v0.4.1/go.mod h1:0L9PGwj20lrtmEMeyw4WKJ/TMyDtvA
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
 github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xWbdbCW3pNTGyYg=
 github.com/bitly/go-simplejson v0.5.0/go.mod h1:cXHtHw4XUPsvGaxgjIAn8PhEWG9NfngEKAMDJEczWVA=
+github.com/bmatcuk/doublestar/v4 v4.10.0 h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs=
+github.com/bmatcuk/doublestar/v4 v4.10.0/go.mod h1:xBQ8jztBU6kakFMg+8WGxn0c6z1fTSPVIjEY1Wr7jzc=
 github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869/go.mod h1:Ekp36dRnpXw/yCqJaO+ZrUyxD+3VXMFFr56k5XYrpB4=
 github.com/buger/jsonparser v1.1.2 h1:frqHqw7otoVbk5M8LlE/L7HTnIq2v9RX6EJ48i9AxJk=
 github.com/buger/jsonparser v1.1.2/go.mod h1:6RYKKt7H4d4+iWqouImQ9R2FZql3VbhNgx27UK13J/0=
@@ -206,6 +208,8 @@ github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b h1:Wk0c8Baxm8D
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b/go.mod h1:h2idE8ypJFzcq4eOKOXGPrx56UyhI+UwKkFUyN4L0o8=
 github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b h1:/Xe9+L0MR95+6XgZXuVzOR+52u4AMThaXatpV3Kg/1I=
 github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b/go.mod h1:JvHV8R+KBkA1iZYHTM4Byatnqe6GBvKpIN+25fn6rnA=
+github.com/mattsp1290/eino-tools v0.1.1-0.20260825160656-63a3c99272c2 h1:vcAOW8f7dWOs3g6IwgKMTvYGpXGaSplaNrcXSh0K2Ko=
+github.com/mattsp1290/eino-tools v0.1.1-0.20260825160656-63a3c99272c2/go.mod h1:4S9/M93yJeu7UPPR8r2W5t+k+V6FJtQcS/Fy04qUgGA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2 h1:iXombGGjqjBrmE9WaSidUhhi3YQhf42QTHvHLMkgvCA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2/go.mod h1:qs96ysDmxhE4BZoU45I43zcyfnaYxU3X+aRzLko/htY=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b h1:j7+1HpAFS1zy5+Q4qx1fWh90gTKwiN4QCGoY9TWyyO4=
