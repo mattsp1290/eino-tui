@@ -32,3 +32,6 @@ go.work.sum
 # .vscode/
 
 /eino-tui
+
+# Local implementation plans
+.agents/plans/
