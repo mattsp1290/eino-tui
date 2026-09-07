@@ -283,6 +283,31 @@ func TestFixtureReadOnlyToolActivityAndReplay(t *testing.T) {
 	}
 }
 
+func TestFixtureFIFOReadSettlesAllowsNextTurnAndCloses(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	workspace := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(workspace, "fixture.txt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process := startTerminal(t, fixture, []string{"--tool-read"}, workspace, filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
+	process.write(t, "inspect fixture\r")
+	process.waitText(t, "file_read", 3*time.Second)
+	// The fixture answers whenever it receives an envelope, including failure.
+	process.waitText(t, "read successfully", 3*time.Second)
+	firstTurnEnd := len(process.text())
+	process.write(t, "continue after rejected read\r")
+	process.waitTextAfter(t, firstTurnEnd, "read successfully", 3*time.Second)
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("shutdown after FIFO read: %v", err)
+	}
+	if strings.Contains(process.text(), "forced shutdown") {
+		t.Fatal("FIFO read prevented normal shutdown")
+	}
+}
+
 func TestModelSelectorLoadsLazilyAndCancelKeepsPromptUsable(t *testing.T) {
 	temp := t.TempDir()
 	fixture := filepath.Join(temp, "fixture")

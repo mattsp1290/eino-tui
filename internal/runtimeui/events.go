@@ -36,10 +36,15 @@ type eventAccumulator struct {
 func newEventAccumulator(seed []Message) eventAccumulator {
 	a := eventAccumulator{}
 	a.ensureMaps()
+	var budget liveMessageBudget
 	for _, source := range seed {
 		messageID := session.MessageID(source.ID)
 		if messageID == "" || source.Role != RoleAssistant {
 			continue
+		}
+		if !budget.admit(source) {
+			a.resync = true
+			break
 		}
 		message := source
 		message.Tools = cloneActivities(source.Tools)
@@ -57,9 +62,6 @@ func newEventAccumulator(seed []Message) eventAccumulator {
 			a.toolCount++
 			a.toolBytes += len(activity.Name) + len(activity.Subject) + len(activity.Status)
 		}
-	}
-	if a.toolCount > MaxLiveToolActivities || a.toolBytes > MaxLiveToolDisplayBytes || a.textBytes > textsafe.MaxDisplayBytes {
-		a.resync = true
 	}
 	return a
 }

@@ -13,7 +13,7 @@ require (
 	github.com/mattsp1290/codex-auth-go v0.4.0
 	github.com/mattsp1290/eino-agent v0.3.2
 	github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b
-	github.com/mattsp1290/eino-tools v0.1.1-0.20260825160656-63a3c99272c2
+	github.com/mattsp1290/eino-tools v0.1.1-0.20260907205433-99b7b6adda67
 )
 
 require (

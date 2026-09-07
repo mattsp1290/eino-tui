@@ -22,7 +22,7 @@ import (
 
 const (
 	componentInstance = "eino-tui-read-only-tools"
-	catalogVersion    = "v0.1.1-0.20260825160656-63a3c99272c2"
+	catalogVersion    = "v0.1.1-0.20260907205433-99b7b6adda67"
 	// These identities change only when the host adapter contract or ordered
 	// allowlist changes. They are SHA-256 digests of
 	// "eino-tui-eino-tools-adapter-contract-v1" and

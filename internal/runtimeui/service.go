@@ -242,8 +242,8 @@ func (s *service) attemptError(a *attempt) error {
 
 func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events <-chan session.EventRecord, prompt string) (ActionResult, error) {
 	projection, err := s.projectActiveHistory(a.ctx, handle.RunID())
-	resync := err != nil
-	if resync {
+	resync := err != nil || projection.Resync
+	if err != nil {
 		projection.Messages = []Message{{Role: RoleUser, Content: textsafe.Display(prompt), Status: StatusComplete}}
 		projection.LiveMessages = nil
 	}

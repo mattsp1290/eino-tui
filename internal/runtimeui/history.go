@@ -15,6 +15,7 @@ const maxTranscriptBytes = 2 << 20
 type historyProjection struct {
 	Messages     []Message
 	LiveMessages []Message
+	Resync       bool
 }
 
 type historyCandidate struct {
@@ -42,6 +43,8 @@ func loadHistoryProjection(ctx context.Context, store session.Store, sessionID s
 	calls := make(map[session.ToolCallID]session.ToolCall)
 	window := transcriptWindow{limit: maxTranscriptBytes, omitted: omitted}
 	var live []Message
+	var liveBudget liveMessageBudget
+	liveOverflow := false
 	for _, candidate := range candidates {
 		projected, ok, projectErr := projectMessage(ctx, store, candidate.message, candidate.parts, runs, calls)
 		if projectErr != nil {
@@ -51,12 +54,16 @@ func loadHistoryProjection(ctx context.Context, store session.Store, sessionID s
 			continue
 		}
 		if activeRun != "" && projected.runID == activeRun && projected.message.Role == RoleAssistant {
-			live = append(live, projected.message)
+			if liveOverflow || !liveBudget.admit(projected.message) {
+				liveOverflow = true
+			} else {
+				live = append(live, projected.message)
+			}
 			continue
 		}
 		window.Push(projected.message)
 	}
-	return historyProjection{Messages: window.Items(), LiveMessages: cloneMessages(live)}, nil
+	return historyProjection{Messages: window.Items(), LiveMessages: cloneMessages(live), Resync: liveOverflow}, nil
 }
 
 func loadRecentCandidates(ctx context.Context, store session.Store, sessionID session.ID) ([]historyCandidate, bool, error) {

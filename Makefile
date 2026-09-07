@@ -24,7 +24,7 @@ check-mod:
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-agent)" = "v0.3.2"
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/codex-auth-go)" = "v0.4.0"
 	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-providers)" = "v0.0.0-20260903160254-f62b0132ac2b"
-	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-tools)" = "v0.1.1-0.20260825160656-63a3c99272c2"
+	@test "$$(go list -m -f '{{.Version}}' github.com/mattsp1290/eino-tools)" = "v0.1.1-0.20260907205433-99b7b6adda67"
 	@test "$$(go list -m -f '{{.Version}}' github.com/cloudwego/eino)" = "v0.8.13"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbletea/v2)" = "v2.0.9"
 	@test "$$(go list -m -f '{{.Version}}' charm.land/bubbles/v2)" = "v2.2.1"

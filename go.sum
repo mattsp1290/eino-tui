@@ -208,8 +208,8 @@ github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b h1:Wk0c8Baxm8D
 github.com/mattsp1290/eino-obs v0.0.0-20260627060807-a9a6f8bb478b/go.mod h1:h2idE8ypJFzcq4eOKOXGPrx56UyhI+UwKkFUyN4L0o8=
 github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b h1:/Xe9+L0MR95+6XgZXuVzOR+52u4AMThaXatpV3Kg/1I=
 github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b/go.mod h1:JvHV8R+KBkA1iZYHTM4Byatnqe6GBvKpIN+25fn6rnA=
-github.com/mattsp1290/eino-tools v0.1.1-0.20260825160656-63a3c99272c2 h1:vcAOW8f7dWOs3g6IwgKMTvYGpXGaSplaNrcXSh0K2Ko=
-github.com/mattsp1290/eino-tools v0.1.1-0.20260825160656-63a3c99272c2/go.mod h1:4S9/M93yJeu7UPPR8r2W5t+k+V6FJtQcS/Fy04qUgGA=
+github.com/mattsp1290/eino-tools v0.1.1-0.20260907205433-99b7b6adda67 h1:88PnK1/6dXGo9GdhDHYedgA2srC/0GUL8GGP9frNM5U=
+github.com/mattsp1290/eino-tools v0.1.1-0.20260907205433-99b7b6adda67/go.mod h1:4S9/M93yJeu7UPPR8r2W5t+k+V6FJtQcS/Fy04qUgGA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2 h1:iXombGGjqjBrmE9WaSidUhhi3YQhf42QTHvHLMkgvCA=
 github.com/meguminnnnnnnnn/go-openai v0.1.2/go.mod h1:qs96ysDmxhE4BZoU45I43zcyfnaYxU3X+aRzLko/htY=
 github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b h1:j7+1HpAFS1zy5+Q4qx1fWh90gTKwiN4QCGoY9TWyyO4=

@@ -13,7 +13,11 @@ import (
 func (s *service) pump(active *activeRun, events <-chan session.EventRecord, initial Snapshot) {
 	acc := newEventAccumulator(initial.LiveMessages)
 	version := initial.Version
-	resync := initial.Resync
+	resync := initial.Resync || acc.resync
+	if resync {
+		active.cancelTail()
+		events = nil
+	}
 	result := agentruntime.Result{RunID: active.handle.RunID(), Status: session.RunFailed}
 	resultConsumed := false
 	pendingInterrupt := ""
