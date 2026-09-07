@@ -59,12 +59,18 @@ func startTerminal(t *testing.T, binary string, args []string, workspace, state 
 		t.Fatal(err)
 	}
 	process := &terminalProcess{cmd: cmd, file: file, done: make(chan struct{})}
-	go func() { _, _ = io.Copy(lockedWriter{process}, file) }()
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = io.Copy(lockedWriter{process}, file)
+	}()
 	go func() {
 		err := cmd.Wait()
 		process.mu.Lock()
 		process.waitErr = err
 		process.mu.Unlock()
+		// A child can exit before the reader captures its final terminal bytes.
+		<-readDone
 		close(process.done)
 	}()
 	t.Cleanup(func() {
@@ -119,6 +125,9 @@ func (p *terminalProcess) waitText(t *testing.T, needle string, timeout time.Dur
 				return text
 			}
 		case <-p.done:
+			if text := p.text(); strings.Contains(text, needle) {
+				return text
+			}
 			t.Fatalf("process exited before %q: %v\n%s", needle, p.exitError(), p.text())
 		case <-deadline.C:
 			t.Fatalf("timeout waiting for %q\n%s", needle, p.text())
@@ -139,6 +148,9 @@ func (p *terminalProcess) waitTextAfter(t *testing.T, start int, needle string, 
 				return output[start:]
 			}
 		case <-p.done:
+			if output := p.text(); start < len(output) && strings.Contains(output[start:], needle) {
+				return output[start:]
+			}
 			t.Fatalf("process exited before new %q: %v\n%s", needle, p.exitError(), p.text())
 		case <-deadline.C:
 			t.Fatalf("timeout waiting for new %q\n%s", needle, p.text())
@@ -429,7 +441,8 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	killed := startTerminal(t, fixture, []string{"--long"}, workspace, state)
 	killed.waitText(t, "Codex subscription", 3*time.Second)
 	killed.write(t, "hard kill turn\r")
-	killed.waitText(t, "hard kill turn", 3*time.Second)
+	// Model output proves the run was persisted; prompt echo can precede submit.
+	killed.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 	if err := killed.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
