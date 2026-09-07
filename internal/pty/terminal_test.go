@@ -168,6 +168,31 @@ func (p *terminalProcess) waitExit(t *testing.T, timeout time.Duration) error {
 	}
 }
 
+func (p *terminalProcess) waitStatus(t *testing.T, status string) {
+	t.Helper()
+	start := len(p.text())
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if output := p.text(); strings.Contains(output[start:], status) {
+			return
+		}
+		select {
+		case <-tick.C:
+			// Refresh unchanged status lines and ANSI diffs that omit a prefix.
+			if err := p.cmd.Process.Signal(syscall.SIGWINCH); err != nil {
+				t.Fatal(err)
+			}
+		case <-p.done:
+			t.Fatalf("process exited before status %q: %v\n%s", status, p.exitError(), p.text())
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for status %q\n%s", status, p.text())
+		}
+	}
+}
+
 func TestProductionBinaryNoAuthCommandsNeverAcquireTerminal(t *testing.T) {
 	temp := t.TempDir()
 	production := filepath.Join(temp, "eino-tui")
@@ -308,9 +333,11 @@ func TestFixtureFIFOReadSettlesAllowsNextTurnAndCloses(t *testing.T) {
 	process.waitText(t, "file_read", 3*time.Second)
 	// The fixture answers whenever it receives an envelope, including failure.
 	process.waitText(t, "read successfully", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
 	firstTurnEnd := len(process.text())
 	process.write(t, "continue after rejected read\r")
 	process.waitTextAfter(t, firstTurnEnd, "read successfully", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
 	process.write(t, "\x03")
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("shutdown after FIFO read: %v", err)
@@ -361,6 +388,7 @@ func TestModelSelectorAppliesNextTurnAndRefreshCancelPreservesSecondDraft(t *tes
 	process.waitText(t, "selection gpt-5.6 · high", 3*time.Second)
 	process.waitText(t, "transport completed.", 3*time.Second)
 
+	process.waitStatus(t, "Codex subscription ready")
 	draftAt := len(process.text())
 	process.write(t, "\x1b[200~next draft\nkept intact\x1b[201~")
 	process.waitTextAfter(t, draftAt, "kept intact", 3*time.Second)
@@ -419,7 +447,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	interrupted := startTerminal(t, fixture, []string{"--long"}, workspace, state)
 	interrupted.waitText(t, "Codex subscription", 3*time.Second)
 	interrupted.write(t, "interrupt this\r")
-	interrupted.waitText(t, "interrupt this", 3*time.Second)
+	interrupted.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 	interrupted.write(t, "\x04")
 	time.Sleep(100 * time.Millisecond)
 	select {
@@ -430,9 +458,10 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	interrupted.write(t, "\x1b")
 	interrupted.waitText(t, "[interrupted]", 3*time.Second)
 	interrupted.write(t, "another prompt\r")
-	interrupted.waitText(t, "another prompt", 3*time.Second)
+	interrupted.waitStatus(t, "Streaming Codex response")
+	secondInterrupt := len(interrupted.text())
 	interrupted.write(t, "\x1b")
-	time.Sleep(100 * time.Millisecond)
+	interrupted.waitTextAfter(t, secondInterrupt, "Response interrupted.", 3*time.Second)
 	interrupted.write(t, "\x03")
 	if err := interrupted.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("interrupt exit: %v", err)
@@ -512,7 +541,7 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 			process.waitText(t, "Codex subscription", 3*time.Second)
 			prompt := "active " + scenario.name
 			process.write(t, prompt+"\r")
-			process.waitText(t, prompt, 3*time.Second)
+			process.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 			started := time.Now()
 			if err := scenario.stop(process); err != nil {
 				t.Fatal(err)
@@ -555,12 +584,14 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	}
 	process.write(t, "\r")
 	process.waitText(t, "response:", 3*time.Second)
-	time.Sleep(300 * time.Millisecond)
-	process.write(t, "alt one\x1b\ralt two\r")
-	time.Sleep(500 * time.Millisecond)
 	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 30, Cols: 120}); err != nil {
 		t.Fatal(err)
 	}
+	process.waitStatus(t, "Codex subscription ready")
+	secondTurnStart := len(process.text())
+	process.write(t, "alt one\x1b\ralt two\r")
+	process.waitTextAfter(t, secondTurnStart, "transport completed.", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
 	process.write(t, "\x03")
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)
