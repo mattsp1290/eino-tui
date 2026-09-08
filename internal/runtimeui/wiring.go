@@ -15,6 +15,7 @@ import (
 	"github.com/mattsp1290/eino-agent/stream"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
+	"github.com/mattsp1290/eino-tui/internal/workspacetools"
 )
 
 type Config struct {
@@ -50,8 +51,15 @@ func open(ctx context.Context, database string, sessionID session.ID, workspace 
 		_ = store.Close()
 		return nil, fmt.Errorf("build runtime: %w", err)
 	}
+	mount, err := workspacetools.Mount(ctx, plans)
+	if err != nil {
+		tail.Close()
+		_ = store.Close()
+		return nil, fmt.Errorf("%w: %v", ErrToolsUnavailable, err)
+	}
 	snapshot := config.Snapshot{
 		Agent:    config.Agent{Name: cfg.AgentName, SystemPrompt: cfg.SystemPrompt},
+		Tools:    workspacetools.Config(),
 		Metadata: map[string]string{"workspace_id": string(sessionID), "workspace_root": workspace},
 	}
 	orchestrator, err := agentruntime.NewStreamingOrchestrator(
@@ -62,11 +70,13 @@ func open(ctx context.Context, database string, sessionID session.ID, workspace 
 		agentruntime.WithModelRequestSafeOptions(codexmodel.ReasoningEffortOptionKey),
 	)
 	if err != nil {
+		mount.Deactivate()
+		_ = mount.Close(context.WithoutCancel(ctx))
 		tail.Close()
 		_ = store.Close()
 		return nil, fmt.Errorf("build runtime: %w", err)
 	}
-	return newService(ctx, store, tail, orchestrator, sessionID, snapshot), nil
+	return newService(ctx, store, tail, orchestrator, mount, sessionID, snapshot), nil
 }
 
 func sqliteDSN(database string) string {

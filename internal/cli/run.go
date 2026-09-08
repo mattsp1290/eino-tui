@@ -31,6 +31,7 @@ const (
 
 const (
 	startupDiagnostic = "eino-tui could not start; check workspace and state permissions"
+	toolsDiagnostic   = "eino-tui could not load read-only workspace tools; verify required executables"
 	programDiagnostic = "eino-tui stopped because the terminal program failed"
 	forcedDiagnostic  = "eino-tui forced shutdown; the unfinished turn will be recovered on next launch"
 	authDiagnostic    = "eino-tui could not access Codex authentication"
@@ -151,11 +152,15 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	runtimeConfig := runtimeui.Config{
 		Resolver:     resolver,
 		AgentName:    "codex",
-		SystemPrompt: "Be a helpful, tool-free conversational assistant. Do not claim filesystem or shell access.",
+		SystemPrompt: "Be a helpful read-only repository assistant. You may read, list, glob, and search files only inside the workspace. Do not claim write, edit, shell, network, approval, or autonomous execution capabilities.",
 	}
 	service, err = deps.OpenService(commandCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, runtimeConfig)
 	if err != nil {
-		fmt.Fprintln(stderr, startupDiagnostic)
+		if errors.Is(err, runtimeui.ErrToolsUnavailable) {
+			fmt.Fprintln(stderr, toolsDiagnostic)
+		} else {
+			fmt.Fprintln(stderr, startupDiagnostic)
+		}
 		return ExitStartup
 	}
 	model, fatal := deps.NewApplication(commandCtx, service, stop, app.Config{

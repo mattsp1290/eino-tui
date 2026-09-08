@@ -13,6 +13,7 @@ require (
 	github.com/mattsp1290/codex-auth-go v0.4.0
 	github.com/mattsp1290/eino-agent v0.3.2
 	github.com/mattsp1290/eino-providers v0.0.0-20260903160254-f62b0132ac2b
+	github.com/mattsp1290/eino-tools v0.1.1-0.20260907205433-99b7b6adda67
 )
 
 require (
@@ -21,6 +22,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect

@@ -11,9 +11,13 @@ import (
 )
 
 func (s *service) pump(active *activeRun, events <-chan session.EventRecord, initial Snapshot) {
-	acc := eventAccumulator{}
+	acc := newEventAccumulator(initial.LiveMessages)
 	version := initial.Version
-	resync := initial.Resync
+	resync := initial.Resync || acc.resync
+	if resync {
+		active.cancelTail()
+		events = nil
+	}
 	result := agentruntime.Result{RunID: active.handle.RunID(), Status: session.RunFailed}
 	resultConsumed := false
 	pendingInterrupt := ""
@@ -80,17 +84,18 @@ func (s *service) pump(active *activeRun, events <-chan session.EventRecord, ini
 				resync = true
 				continue
 			}
-			content, changed := acc.accept(event, s.sessionID, active.handle.RunID())
+			update := acc.accept(s.ctx, s.store, event, s.sessionID, active.handle.RunID())
 			if acc.resync {
 				resync = true
 				active.cancelTail()
 				events = nil
 			}
-			if changed {
+			if update.changed {
 				version++
 				snapshot := initial
 				snapshot.Version = version
-				snapshot.LiveAssistant = content
+				snapshot.Messages = cloneMessages(initial.Messages)
+				snapshot.LiveMessages = cloneMessages(update.messages)
 				snapshot.Resync = resync
 				if !active.run.publish(snapshot) {
 					resync = true

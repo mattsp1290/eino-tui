@@ -63,7 +63,7 @@ func (r *fakeRun) Next(context.Context) (runtimeui.Snapshot, bool) {
 }
 
 func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
-	run := newFakeRun("run-1", runtimeui.Snapshot{RunID: "run-1", Version: 2, LiveAssistant: "Demo ", Phase: runtimeui.PhaseRunning}, runtimeui.Snapshot{RunID: "run-1", Version: 3, Terminal: true, Phase: runtimeui.PhaseIdle, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}, {Role: runtimeui.RoleAssistant, Content: "Demo complete"}}})
+	run := newFakeRun("run-1", runtimeui.Snapshot{RunID: "run-1", Version: 2, LiveMessages: []runtimeui.Message{{ID: "live", Role: runtimeui.RoleAssistant, Content: "Demo "}}, Phase: runtimeui.PhaseRunning}, runtimeui.Snapshot{RunID: "run-1", Version: 3, Terminal: true, Phase: runtimeui.PhaseIdle, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}, {Role: runtimeui.RoleAssistant, Content: "Demo complete"}}})
 	service := &fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, start: runtimeui.ActionResult{Kind: runtimeui.ActionStarted, Run: run, Snapshot: runtimeui.Snapshot{RunID: "run-1", Version: 1, Phase: runtimeui.PhaseRunning, Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "hello\nworld"}}}}}
 	model := New(context.Background(), service, testDisplayConfig())
 	_, cmd := model.Update(model.Init()())
@@ -80,7 +80,7 @@ func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 		t.Fatalf("start state: prompt=%q input=%q", service.startedPrompt, model.textarea.Value())
 	}
 	_, next = model.Update(next())
-	if model.snapshot.LiveAssistant != "Demo " || next == nil {
+	if len(model.snapshot.LiveMessages) != 1 || model.snapshot.LiveMessages[0].Content != "Demo " || next == nil {
 		t.Fatalf("live = %#v", model.snapshot)
 	}
 	_, next = model.Update(next())
@@ -134,15 +134,29 @@ func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
 	model.pending = run
 	model.lastVersion = 5
 	model.snapshot.Phase = runtimeui.PhaseRunning
-	model.snapshot = runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "current"}
-	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "prior", Version: 99, LiveAssistant: "wrong"}, ok: true})
-	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 5, LiveAssistant: "also wrong"}, ok: true})
-	if model.snapshot.LiveAssistant != "current" {
+	model.snapshot = runtimeui.Snapshot{RunID: "current", Version: 5, LiveMessages: []runtimeui.Message{{Content: "current"}}}
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "prior", Version: 99, LiveMessages: []runtimeui.Message{{Content: "wrong"}}}, ok: true})
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 5, LiveMessages: []runtimeui.Message{{Content: "also wrong"}}}, ok: true})
+	if model.snapshot.LiveMessages[0].Content != "current" {
 		t.Fatalf("stale snapshot applied: %#v", model.snapshot)
 	}
-	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 6, Resync: true, LiveAssistant: "new"}, ok: true})
-	if model.snapshot.LiveAssistant != "new" || !model.snapshot.Resync {
+	model.Update(snapshotMsg{run: run, snapshot: runtimeui.Snapshot{RunID: "current", Version: 6, Resync: true, LiveMessages: []runtimeui.Message{{Content: "new"}}}, ok: true})
+	if model.snapshot.LiveMessages[0].Content != "new" || !model.snapshot.Resync {
 		t.Fatalf("new snapshot not applied: %#v", model.snapshot)
+	}
+}
+
+func TestModelAppliesHigherVersionToolOnlySnapshot(t *testing.T) {
+	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	run := newFakeRun("current")
+	model.pending = run
+	model.lastVersion = 1
+	model.snapshot = runtimeui.Snapshot{RunID: "current", Version: 1, Phase: runtimeui.PhaseRunning}
+	model.resize(60, 12)
+	toolOnly := runtimeui.Snapshot{RunID: "current", Version: 2, Phase: runtimeui.PhaseRunning, LiveMessages: []runtimeui.Message{{ID: "request", Role: runtimeui.RoleAssistant, Tools: []runtimeui.ToolActivity{{ID: "call", Name: "file_list", Subject: ".", Status: runtimeui.ToolRunning}}}}}
+	model.Update(snapshotMsg{run: run, snapshot: toolOnly, ok: true})
+	if model.lastVersion != 2 || len(model.snapshot.LiveMessages) != 1 || !strings.Contains(model.viewport.View(), "file_list") || !strings.Contains(model.viewport.View(), "running") {
+		t.Fatalf("tool-only snapshot not applied: %#v", model.snapshot)
 	}
 }
 

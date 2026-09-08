@@ -27,6 +27,10 @@ type tailer interface {
 	Subscribe(context.Context, session.ID) (<-chan session.EventRecord, error)
 	Close()
 }
+type mountCloser interface {
+	Deactivate()
+	Close(context.Context) error
+}
 
 type lifecycle uint8
 
@@ -46,6 +50,7 @@ type service struct {
 	store     durableStore
 	tail      tailer
 	runtime   orchestrator
+	mount     mountCloser
 	sessionID session.ID
 	config    config.Snapshot
 
@@ -76,13 +81,17 @@ type activeRun struct {
 	interrupt  chan string
 }
 
-func newService(ctx context.Context, store durableStore, tail tailer, runtime orchestrator, sessionID session.ID, snapshot config.Snapshot) *service {
+func newService(ctx context.Context, store durableStore, tail tailer, runtime orchestrator, mount mountCloser, sessionID session.ID, snapshot config.Snapshot) *service {
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	return &service{ctx: lifetime, cancel: cancel, store: store, tail: tail, runtime: runtime, sessionID: sessionID, config: snapshot, state: stateIdle, shutdownDone: make(chan struct{})}
+	return &service{ctx: lifetime, cancel: cancel, store: store, tail: tail, runtime: runtime, mount: mount, sessionID: sessionID, config: snapshot, state: stateIdle, shutdownDone: make(chan struct{})}
 }
 
 func (s *service) projectHistory(ctx context.Context) ([]Message, error) {
 	return loadHistory(ctx, s.store, s.sessionID)
+}
+
+func (s *service) projectActiveHistory(ctx context.Context, runID session.RunID) (historyProjection, error) {
+	return loadHistoryProjection(ctx, s.store, s.sessionID, runID)
 }
 
 func (s *service) Load(ctx context.Context) (Snapshot, error) {
@@ -232,13 +241,14 @@ func (s *service) attemptError(a *attempt) error {
 }
 
 func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events <-chan session.EventRecord, prompt string) (ActionResult, error) {
-	messages, err := s.projectHistory(a.ctx)
-	resync := err != nil
-	if resync {
-		messages = []Message{{Role: RoleUser, Content: textsafe.Display(prompt), Status: StatusComplete}}
+	projection, err := s.projectActiveHistory(a.ctx, handle.RunID())
+	resync := err != nil || projection.Resync
+	if err != nil {
+		projection.Messages = []Message{{Role: RoleUser, Content: textsafe.Display(prompt), Status: StatusComplete}}
+		projection.LiveMessages = nil
 	}
 	run := newRun(handle.RunID())
-	initial := Snapshot{RunID: handle.RunID(), Version: 1, Messages: messages, Phase: PhaseRunning, Resync: resync}
+	initial := Snapshot{RunID: handle.RunID(), Version: 1, Messages: cloneMessages(projection.Messages), LiveMessages: cloneMessages(projection.LiveMessages), Phase: PhaseRunning, Resync: resync}
 	active := &activeRun{run: run, handle: handle, cancelRun: a.cancel, cancelTail: a.cancelTail, interrupt: make(chan string, 1)}
 	s.mu.Lock()
 	closing := s.state >= stateClosing
@@ -251,7 +261,7 @@ func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events
 		s.state = stateRunning
 	}
 	s.mu.Unlock()
-	go s.pump(active, events, initial)
+	go s.pump(active, events, cloneSnapshot(initial))
 	if closing || interruptRequested {
 		reason := "user interrupt"
 		if closing {
@@ -259,7 +269,7 @@ func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events
 		}
 		active.requestInterrupt(reason)
 	}
-	return ActionResult{Kind: ActionStarted, Run: run, Snapshot: initial}, nil
+	return ActionResult{Kind: ActionStarted, Run: run, Snapshot: cloneSnapshot(initial)}, nil
 }
 
 func (s *service) toWaiting(a *attempt) (ActionResult, error) {
@@ -410,8 +420,13 @@ func (s *service) shutdown() {
 		<-active.run.Finished()
 	}
 	s.cancel()
+	var cleanupErr error
+	if s.mount != nil {
+		s.mount.Deactivate()
+		cleanupErr = s.mount.Close(context.Background())
+	}
 	s.tail.Close()
-	s.shutdownErr = s.store.Close()
+	s.shutdownErr = errors.Join(cleanupErr, s.store.Close())
 	s.mu.Lock()
 	s.state = stateClosed
 	s.mu.Unlock()

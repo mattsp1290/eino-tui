@@ -47,7 +47,7 @@ func newOrchestratorTestService(t *testing.T, runtime orchestrator) *service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newService(ctx, store, stream.NewTail(8), runtime, session.ID("service-test"), config.Snapshot{})
+	return newService(ctx, store, stream.NewTail(8), runtime, nil, session.ID("service-test"), config.Snapshot{})
 }
 
 func TestAttemptTransitionsAreIdentityCheckedAndMonotonic(t *testing.T) {

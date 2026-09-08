@@ -27,10 +27,7 @@ const (
 	reasoningTwo = `{"type":"reasoning","id":"rs_private_2","summary":[],"encrypted_content":"REASON_SECRET_TWO"}`
 )
 
-type recordingCodexTransport struct {
-	mu       sync.Mutex
-	requests [][]byte
-}
+type recordingCodexTransport struct{ codexRequests }
 
 type failureThenSuccessTransport struct {
 	mu    sync.Mutex
@@ -71,14 +68,10 @@ func (t *failureThenSuccessTransport) RoundTrip(request *http.Request) (*http.Re
 }
 
 func (t *recordingCodexTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	body, err := io.ReadAll(request.Body)
+	turn, err := t.record(request)
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
-	t.requests = append(t.requests, append([]byte(nil), body...))
-	turn := len(t.requests)
-	t.mu.Unlock()
 	var events []string
 	if turn == 1 {
 		events = []string{
@@ -93,25 +86,7 @@ func (t *recordingCodexTransport) RoundTrip(request *http.Request) (*http.Respon
 			`{"type":"response.completed","response":{"id":"response_2","usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11}}}`,
 		}
 	}
-	var stream strings.Builder
-	for _, event := range events {
-		stream.WriteString("data: ")
-		stream.WriteString(event)
-		stream.WriteString("\n\n")
-	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream.String())), Request: request}, nil
-}
-
-func (t *recordingCodexTransport) request(index int) []byte {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return append([]byte(nil), t.requests[index]...)
-}
-
-func (t *recordingCodexTransport) count() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.requests)
+	return codexSSEResponse(request, events), nil
 }
 
 func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
@@ -198,8 +173,8 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	if err := json.Unmarshal(request, &payload); err != nil {
 		t.Fatalf("decode second request: %v", err)
 	}
-	if len(payload.Tools) != 0 || payload.Reasoning.Effort != codexmodel.ReasoningEffortHigh {
-		t.Fatalf("Codex request registered tools: %s", request)
+	if got := providerToolNames(t, payload.Tools); strings.Join(got, ",") != "file_read,file_list,glob,search" || payload.Reasoning.Effort != codexmodel.ReasoningEffortHigh {
+		t.Fatalf("Codex request tools=%v effort=%q", got, payload.Reasoning.Effort)
 	}
 	var restored []string
 	for _, item := range payload.Input {
@@ -431,71 +406,6 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCodexToolCallResponseIsRejectedBeforeDurableToolExecution(t *testing.T) {
-	const (
-		transient  = "SECRET_TRANSIENT_PROVIDER_TEXT"
-		secretName = "SECRET_PROVIDER_TOOL_NAME"
-		secretArgs = "SECRET_PROVIDER_TOOL_ARGS"
-	)
-	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
-		stream := strings.Join([]string{
-			`data: {"type":"response.output_text.delta","delta":"` + transient + `"}`,
-			`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":""}}`,
-			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"value\":\"` + secretArgs + `\"}"}`,
-			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"` + secretName + `","call_id":"call_secret","arguments":"{\"value\":\"` + secretArgs + `\"}"}}`,
-			`data: {"type":"response.completed","response":{"id":"response_tool"}}`,
-			"",
-		}, "\n\n")
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}, nil
-	})
-	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
-	started, err := service.Start(ctx, "do not execute provider tools", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminal := drainProviderRun(t, started.Run)
-	if terminal.Notice != runtimeui.NoticeProviderFailed || len(terminal.Messages) != 1 || terminal.Messages[0].Status != runtimeui.StatusFailed {
-		t.Fatalf("terminal = %#v", terminal)
-	}
-	closeRuntime(t, service)
-
-	db, err := sql.Open("sqlite", paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var toolCalls int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tool_calls`).Scan(&toolCalls); err != nil {
-		t.Fatal(err)
-	}
-	if toolCalls != 0 {
-		t.Fatalf("provider-controlled response created %d durable tool calls", toolCalls)
-	}
-	var assistantPlaceholders int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE run_id = ? AND role = 'assistant'`, terminal.RunID).Scan(&assistantPlaceholders); err != nil {
-		t.Fatal(err)
-	}
-	// Failed runs retain one content-free assistant placeholder as a recovery
-	// anchor; terminal projection hides it and no streamed content may be stored.
-	if assistantPlaceholders != 1 {
-		t.Fatalf("rejected provider response left %d durable assistant placeholders", assistantPlaceholders)
-	}
-	var assistantParts int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p JOIN messages m ON m.id = p.message_id WHERE m.run_id = ? AND m.role = 'assistant'`, terminal.RunID).Scan(&assistantParts); err != nil {
-		t.Fatal(err)
-	}
-	if assistantParts != 0 {
-		t.Fatalf("rejected provider response left %d durable assistant parts", assistantParts)
-	}
-	assertDurableSecretsAbsent(t, paths.Database, transient, secretName, secretArgs, "call_secret")
 }
 
 func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {

@@ -59,12 +59,18 @@ func startTerminal(t *testing.T, binary string, args []string, workspace, state 
 		t.Fatal(err)
 	}
 	process := &terminalProcess{cmd: cmd, file: file, done: make(chan struct{})}
-	go func() { _, _ = io.Copy(lockedWriter{process}, file) }()
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = io.Copy(lockedWriter{process}, file)
+	}()
 	go func() {
 		err := cmd.Wait()
 		process.mu.Lock()
 		process.waitErr = err
 		process.mu.Unlock()
+		// A child can exit before the reader captures its final terminal bytes.
+		<-readDone
 		close(process.done)
 	}()
 	t.Cleanup(func() {
@@ -119,6 +125,9 @@ func (p *terminalProcess) waitText(t *testing.T, needle string, timeout time.Dur
 				return text
 			}
 		case <-p.done:
+			if text := p.text(); strings.Contains(text, needle) {
+				return text
+			}
 			t.Fatalf("process exited before %q: %v\n%s", needle, p.exitError(), p.text())
 		case <-deadline.C:
 			t.Fatalf("timeout waiting for %q\n%s", needle, p.text())
@@ -139,6 +148,9 @@ func (p *terminalProcess) waitTextAfter(t *testing.T, start int, needle string, 
 				return output[start:]
 			}
 		case <-p.done:
+			if output := p.text(); start < len(output) && strings.Contains(output[start:], needle) {
+				return output[start:]
+			}
 			t.Fatalf("process exited before new %q: %v\n%s", needle, p.exitError(), p.text())
 		case <-deadline.C:
 			t.Fatalf("timeout waiting for new %q\n%s", needle, p.text())
@@ -153,6 +165,31 @@ func (p *terminalProcess) waitExit(t *testing.T, timeout time.Duration) error {
 	case <-time.After(timeout):
 		t.Fatalf("process did not exit\n%s", p.text())
 		return nil
+	}
+}
+
+func (p *terminalProcess) waitStatus(t *testing.T, status string) {
+	t.Helper()
+	start := len(p.text())
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if output := p.text(); strings.Contains(output[start:], status) {
+			return
+		}
+		select {
+		case <-tick.C:
+			// Refresh unchanged status lines and ANSI diffs that omit a prefix.
+			if err := p.cmd.Process.Signal(syscall.SIGWINCH); err != nil {
+				t.Fatal(err)
+			}
+		case <-p.done:
+			t.Fatalf("process exited before status %q: %v\n%s", status, p.exitError(), p.text())
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for status %q\n%s", status, p.text())
+		}
 	}
 }
 
@@ -238,6 +275,78 @@ func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
 	}
 }
 
+func TestFixtureReadOnlyToolActivityAndReplay(t *testing.T) {
+	temp := t.TempDir()
+	fixtureBinary := filepath.Join(temp, "fixture")
+	buildBinary(t, fixtureBinary, "./internal/pty/testcmd/eino-tui-fixture")
+	workspace := t.TempDir()
+	const privateOutput = "FIXTURE_CONTENT_MUST_NOT_BE_DIRECTLY_RENDERED"
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte(privateOutput), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	process := startTerminal(t, fixtureBinary, []string{"--tool-read"}, workspace, state)
+	process.waitText(t, "Codex subscription", 3*time.Second)
+	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 8, Cols: 18}); err != nil {
+		t.Fatal(err)
+	}
+	process.write(t, "inspect fixture\r")
+	process.waitText(t, "file_read", 3*time.Second)
+	process.waitText(t, "completed", 3*time.Second)
+	if strings.Contains(process.text(), privateOutput) {
+		t.Fatal("tool output was directly rendered")
+	}
+	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 28, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+	process.waitText(t, "read successfully", 3*time.Second)
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if output := process.text(); !strings.Contains(output, "\x1b[?1049l") || strings.Contains(output, privateOutput) {
+		t.Fatalf("terminal was not restored or output leaked: %q", output)
+	}
+
+	replay := startTerminal(t, fixtureBinary, []string{"--tool-read"}, workspace, state)
+	replay.waitText(t, "file_read", 3*time.Second)
+	replay.waitText(t, "completed", 3*time.Second)
+	if strings.Contains(replay.text(), privateOutput) {
+		t.Fatal("replayed tool output was directly rendered")
+	}
+	replay.write(t, "\x04")
+	if err := replay.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("replay exit: %v", err)
+	}
+}
+
+func TestFixtureFIFOReadSettlesAllowsNextTurnAndCloses(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	workspace := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(workspace, "fixture.txt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process := startTerminal(t, fixture, []string{"--tool-read"}, workspace, filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
+	process.write(t, "inspect fixture\r")
+	process.waitText(t, "file_read", 3*time.Second)
+	// The fixture answers whenever it receives an envelope, including failure.
+	process.waitText(t, "read successfully", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
+	firstTurnEnd := len(process.text())
+	process.write(t, "continue after rejected read\r")
+	process.waitTextAfter(t, firstTurnEnd, "read successfully", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("shutdown after FIFO read: %v", err)
+	}
+	if strings.Contains(process.text(), "forced shutdown") {
+		t.Fatal("FIFO read prevented normal shutdown")
+	}
+}
+
 func TestModelSelectorLoadsLazilyAndCancelKeepsPromptUsable(t *testing.T) {
 	temp := t.TempDir()
 	fixture := filepath.Join(temp, "fixture")
@@ -279,6 +388,7 @@ func TestModelSelectorAppliesNextTurnAndRefreshCancelPreservesSecondDraft(t *tes
 	process.waitText(t, "selection gpt-5.6 · high", 3*time.Second)
 	process.waitText(t, "transport completed.", 3*time.Second)
 
+	process.waitStatus(t, "Codex subscription ready")
 	draftAt := len(process.text())
 	process.write(t, "\x1b[200~next draft\nkept intact\x1b[201~")
 	process.waitTextAfter(t, draftAt, "kept intact", 3*time.Second)
@@ -337,7 +447,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	interrupted := startTerminal(t, fixture, []string{"--long"}, workspace, state)
 	interrupted.waitText(t, "Codex subscription", 3*time.Second)
 	interrupted.write(t, "interrupt this\r")
-	interrupted.waitText(t, "interrupt this", 3*time.Second)
+	interrupted.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 	interrupted.write(t, "\x04")
 	time.Sleep(100 * time.Millisecond)
 	select {
@@ -348,9 +458,10 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	interrupted.write(t, "\x1b")
 	interrupted.waitText(t, "[interrupted]", 3*time.Second)
 	interrupted.write(t, "another prompt\r")
-	interrupted.waitText(t, "another prompt", 3*time.Second)
+	interrupted.waitStatus(t, "Streaming Codex response")
+	secondInterrupt := len(interrupted.text())
 	interrupted.write(t, "\x1b")
-	time.Sleep(100 * time.Millisecond)
+	interrupted.waitTextAfter(t, secondInterrupt, "Response interrupted.", 3*time.Second)
 	interrupted.write(t, "\x03")
 	if err := interrupted.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("interrupt exit: %v", err)
@@ -359,7 +470,8 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	killed := startTerminal(t, fixture, []string{"--long"}, workspace, state)
 	killed.waitText(t, "Codex subscription", 3*time.Second)
 	killed.write(t, "hard kill turn\r")
-	killed.waitText(t, "hard kill turn", 3*time.Second)
+	// Model output proves the run was persisted; prompt echo can precede submit.
+	killed.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 	if err := killed.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +541,7 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 			process.waitText(t, "Codex subscription", 3*time.Second)
 			prompt := "active " + scenario.name
 			process.write(t, prompt+"\r")
-			process.waitText(t, prompt, 3*time.Second)
+			process.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 			started := time.Now()
 			if err := scenario.stop(process); err != nil {
 				t.Fatal(err)
@@ -472,12 +584,14 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	}
 	process.write(t, "\r")
 	process.waitText(t, "response:", 3*time.Second)
-	time.Sleep(300 * time.Millisecond)
-	process.write(t, "alt one\x1b\ralt two\r")
-	time.Sleep(500 * time.Millisecond)
 	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 30, Cols: 120}); err != nil {
 		t.Fatal(err)
 	}
+	process.waitStatus(t, "Codex subscription ready")
+	secondTurnStart := len(process.text())
+	process.write(t, "alt one\x1b\ralt two\r")
+	process.waitTextAfter(t, secondTurnStart, "transport completed.", 3*time.Second)
+	process.waitStatus(t, "Codex subscription ready")
 	process.write(t, "\x03")
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)

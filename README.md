@@ -1,6 +1,6 @@
 # eino-tui
 
-`eino-tui` is a tool-free terminal chat backed by ChatGPT Codex subscription access. It streams responses through [`eino-providers`](https://github.com/mattsp1290/eino-providers), keeps each workspace's conversation in SQLite through [`eino-agent`](https://github.com/mattsp1290/eino-agent), and restores that conversation after relaunch.
+`eino-tui` is a repository-aware, read-only terminal assistant backed by ChatGPT Codex subscription access. It streams responses through [`eino-providers`](https://github.com/mattsp1290/eino-providers), keeps each workspace's conversation in SQLite through [`eino-agent`](https://github.com/mattsp1290/eino-agent), and restores that conversation and its tool activity after relaunch.
 
 Prompts and responses are sent to the Codex service. Durable conversation rows, including opaque provider-continuation state, remain in the local `sessions.db`; protect its backups and filesystem access accordingly.
 
@@ -8,6 +8,7 @@ Prompts and responses are sent to the Codex service. Durable conversation rows, 
 
 - macOS or Linux; Windows is not supported yet.
 - Go 1.26.8 to build from source.
+- `rg` (ripgrep) on `PATH` and `/bin/sh`. The shell executable is required only while loading the pinned standard tool catalog; no shell tool is exposed.
 - An interactive terminal, writable user config/state directories, and an eligible ChatGPT subscription. Local login status does not prove plan eligibility, model availability, or remaining quota.
 
 ## Login and launch
@@ -82,6 +83,10 @@ Workspace sessions use a `workspace-v2` identity derived from the canonical work
 
 An abrupt process death can leave a five-second durable lease. The next launch waits for expiry, recovers the unfinished turn as interrupted, and preserves its admitted user message. An empty assistant placeholder is never rendered.
 
+Every newly admitted turn can use exactly four default-on tools inside the canonical startup workspace: `file_read`, `file_list`, `glob`, and `search`. Model-selected reads can include hidden or ignored files. Workspace containment prevents path traversal and symlink escape, but it is not a confidentiality filter: readable in-workspace content selected by the model is sent to Codex. Launch only in workspaces whose readable contents are safe for model access.
+
+The terminal shows a bounded activity row with the tool name, sanitized workspace-relative subject, and durable `pending`, `running`, `completed`, `failed`, or `interrupted` status. Tool-result envelopes are returned to the model but never directly rendered. A model-authored answer remains visible even when it quotes content learned from a tool. `completed` means the executor returned a result envelope; a leaf operation may describe a structured failure inside that private envelope.
+
 ## Fixed diagnostics
 
 - Logged out: run `eino-tui login` before launching chat.
@@ -90,14 +95,15 @@ An abrupt process death can leave a five-second durable lease. The next launch w
 - Quota exhausted: wait for quota availability before retrying.
 - Provider failure: refresh, transport, HTTP, or decoding failed; retry after checking connectivity and service availability.
 - Conversation unavailable: local durable history could not be reconciled; inspect state ownership and permissions.
+- Read-only tools unavailable: install or repair the required executables. Startup prints only `eino-tui could not load read-only workspace tools; verify required executables`; executable and workspace paths remain hidden.
 - Forced shutdown: cleanup exceeded two seconds; relaunch in the same workspace to use lease recovery.
 
 The terminal never renders tokens, account identifiers, auth paths, raw provider bodies/errors, encrypted reasoning, or panic values.
 
 ## Scope
 
-This is terminal chat, not an autonomous coding agent. It has no tools, filesystem or shell access, permission prompts, provider picker, private reasoning-content display, usage/cost display, or coding-agent autonomy. Each admitted turn freezes its own model and reasoning selection; changing the picker later cannot reconfigure an active or completed turn.
+This is a read-only repository assistant, not an autonomous coding agent. Its only tools are workspace-bound file read, directory list, glob, and ripgrep search. File writes, edits, patches, shell commands, network fetches, user-interaction tools, tracker tools, approval prompts, private reasoning-content display, usage/cost display, and coding-agent autonomy are unavailable. Each admitted turn freezes its own model, reasoning selection, and exact tool plan; changing the picker later cannot reconfigure an active or completed turn.
 
 ## Manual subscription smoke test
 
-Automated tests use scripted HTTP and never read the default credential path. Before release, follow the [manual subscription smoke test](docs/manual-subscription-smoke.md): verify the lazy live catalog and explicit refresh, use two public model/effort pairs across related turns, interrupt and continue, then relaunch from the workspace and a symlink spelling to confirm transcript continuity and process-local selection reset. Record only the permitted public version and pass/fail fields—never credentials, account data, catalog bodies, prompt/response bodies, private reasoning, or auth paths.
+Automated tests use scripted HTTP and never read the default credential path. Before release, follow the [manual subscription smoke test](docs/manual-subscription-smoke.md): verify the lazy live catalog and explicit refresh, exercise a repository-safe read/list/search in a disposable workspace, reject an escape attempt, interrupt and continue, then relaunch from the workspace and a symlink spelling to confirm activity/transcript continuity and process-local selection reset. Record only the permitted public version and pass/fail fields—never credentials, account data, catalog bodies, prompt/response bodies, file paths/content, tool arguments/output/errors, private reasoning, auth paths, or terminal captures.
