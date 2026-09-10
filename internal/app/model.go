@@ -160,7 +160,6 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		return m.applyLoaded(msg)
 	case startedMsg:
-		m.closePickerIfBusy(runtimeui.PhaseStarting)
 		if msg.err != nil {
 			m.snapshot.Phase = runtimeui.PhaseIdle
 			if !errors.Is(msg.err, context.Canceled) {
@@ -168,6 +167,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		m.closePickerIfBusy(runtimeui.PhaseStarting)
 		if !m.currentGeneration(msg.result.Snapshot.Conversation) {
 			return m, nil
 		}
@@ -300,7 +300,19 @@ func (m *Model) applyLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 	if m.conv.mode == convReconcile {
 		m.closeConversationDialog()
 	}
-	if msg.snapshot.Conversation.ID != "" && msg.snapshot.Conversation.ID != m.current.ID {
+	if id := msg.snapshot.Conversation.ID; id != "" && id != m.current.ID {
+		// A reconciled or startup identity change is a switch: both the
+		// outgoing and the destination drafts are preserved, never evicted.
+		switch {
+		case m.current.ID == "":
+			m.textarea.SetValue(m.drafts[id])
+			delete(m.drafts, id)
+			m.recountDrafts()
+		case m.draftFits(m.textarea.Value()):
+			m.switchDrafts(m.current.ID, id)
+		default:
+			msg.snapshot.Notice = noticeDraftBudget
+		}
 		m.installConversation(msg.snapshot.Conversation)
 	}
 	m.applyLoad(msg.snapshot)

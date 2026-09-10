@@ -644,3 +644,30 @@ func TestAgentRenameToolUpdatesTitleActivityAndReplay(t *testing.T) {
 		t.Fatalf("allowlist=%v", names)
 	}
 }
+
+func TestCreateReconcilesCounterWhenPreferencesVanishWhileOpen(t *testing.T) {
+	ctx := context.Background()
+	paths, workspace := fixtureWorkspace(t)
+	service := openResolvedFixture(t, ctx, paths, workspace)
+	loaded, _ := service.Load(ctx)
+	second, err := service.CreateConversation(ctx, loaded.Conversation.Generation)
+	if err != nil || second.Snapshot.Conversation.Number != 2 {
+		t.Fatalf("second=%#v err=%v", second.Snapshot.Conversation, err)
+	}
+	if err := os.Remove(filepath.Join(paths.Workspaces, workspace.ID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	third, err := service.CreateConversation(ctx, second.Snapshot.Conversation.Generation)
+	if err != nil || third.Snapshot.Conversation.Number != 3 {
+		t.Fatalf("counter reused after preference loss: %#v err=%v", third.Snapshot.Conversation, err)
+	}
+	page, _ := service.ListConversations(ctx, "")
+	seen := map[uint64]bool{}
+	for _, item := range page.Items {
+		if seen[item.Number] {
+			t.Fatalf("duplicate immutable number %d in %#v", item.Number, page)
+		}
+		seen[item.Number] = true
+	}
+	closeService(t, service)
+}

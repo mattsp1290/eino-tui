@@ -55,7 +55,7 @@ func openDatabase(ctx context.Context, path string) (*pooledStore, error) {
 	}
 	defer release()
 	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !platform.OwnedByCurrentUser(info) {
 		return nil, fmt.Errorf("%w: database file", ErrDatabaseUnavailable)
 	}
 	pool, err := sql.Open("sqlite", databaseDSN(path))
@@ -74,10 +74,12 @@ func openDatabase(ctx context.Context, path string) (*pooledStore, error) {
 	store, err := sqlite.New(ctx, pool)
 	if err != nil {
 		_ = pool.Close()
-		if fresh || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("%w: validation", ErrDatabaseUnavailable)
+		// Upstream signals a foreign or partial schema with session.ErrConflict;
+		// every other failure (busy, I/O, permission) is transient, not unsupported.
+		if !fresh && errors.Is(err, session.ErrConflict) {
+			return nil, ErrDatabaseUnsupported
 		}
-		return nil, ErrDatabaseUnsupported
+		return nil, fmt.Errorf("%w: validation", ErrDatabaseUnavailable)
 	}
 	var mode string
 	if err := pool.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {

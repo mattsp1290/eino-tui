@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattsp1290/eino-tui/internal/conversationnames"
@@ -26,6 +27,9 @@ func (m *Model) openRename() {
 
 func (m *Model) pasteRename(content string) {
 	value := oneLine(m.conv.input.Value() + content)
+	if m.conv.input.CharLimit > 0 && utf8.RuneCountInString(value) > m.conv.input.CharLimit {
+		m.conv.err = noticeRenameClipped
+	}
 	m.conv.input.SetValue(value)
 	m.conv.input.CursorEnd()
 }

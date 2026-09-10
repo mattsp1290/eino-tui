@@ -38,10 +38,11 @@ type catalogLoadedMsg struct {
 // selection generation they were issued from, so a late result can never
 // update a newer screen, draft, title, or run.
 type directoryLoadedMsg struct {
-	op      uint64
-	cursors []string
-	page    runtimeui.ConversationPage
-	err     error
+	op         uint64
+	generation uint64
+	cursors    []string
+	page       runtimeui.ConversationPage
+	err        error
 }
 type conversationCreatedMsg struct {
 	op         uint64

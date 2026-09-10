@@ -305,3 +305,19 @@ func TestMountTwiceOnSameRegistry(t *testing.T) {
 	t.Log("second mount on the same registry unexpectedly succeeded; duplicate instance was not rejected")
 	_ = second.Close(ctx)
 }
+
+func TestAdvertisedSchemaDisallowsAdditionalProperties(t *testing.T) {
+	schema, err := Definition().Parameters.ToJSONSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"additionalProperties":false`, `"required":["title"]`, `"type":"object"`, `"title":{`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("advertised schema missing %s: %s", want, raw)
+		}
+	}
+}

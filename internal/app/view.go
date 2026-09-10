@@ -200,15 +200,15 @@ func (m *Model) View() tea.View {
 		}
 	case m.conv.mode != convClosed:
 		if m.terminalHeight <= 1 {
-			content = m.conversationView(m.terminalWidth, 1)
+			content = m.conversationView(width, 1)
 		} else {
-			content = header + "\n" + m.conversationView(m.terminalWidth, m.terminalHeight-1)
+			content = header + "\n" + m.conversationView(width, m.terminalHeight-1)
 		}
 	case m.picker.mode != pickerClosed:
 		if m.terminalHeight <= 1 {
-			content = m.pickerView(m.terminalWidth, 1)
+			content = m.pickerView(width, 1)
 		} else {
-			content = header + "\n" + m.pickerView(m.terminalWidth, m.terminalHeight-1)
+			content = header + "\n" + m.pickerView(width, m.terminalHeight-1)
 		}
 	default:
 		notice := m.snapshot.Notice
@@ -221,11 +221,35 @@ func (m *Model) View() tea.View {
 			"Alt+S conversations · Alt+M models · Ctrl+C quit",
 			"Alt+S · Alt+M · Ctrl+C",
 		)
-		content = header + "\n" + boundedLine(notice, width) + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + boundedLine(footer, width)
+		content = m.chatView(header, boundedLine(notice, width), boundedLine(footer, width))
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
 	return view
+}
+
+// chatView keeps the main chat frame within the terminal height. Below five
+// rows the transcript and footer give way so the status line and editor stay
+// visible and keyboard exit keeps working.
+func (m *Model) chatView(header, notice, footer string) string {
+	switch {
+	case m.terminalHeight == 1:
+		return notice
+	case m.terminalHeight == 2:
+		return header + "\n" + notice
+	case m.terminalHeight == 3:
+		return header + "\n" + notice + "\n" + firstLine(m.textarea.View())
+	case m.terminalHeight == 4:
+		return header + "\n" + notice + "\n" + firstLine(m.textarea.View()) + "\n" + footer
+	}
+	return header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + footer
+}
+
+func firstLine(value string) string {
+	if index := strings.IndexByte(value, '\n'); index >= 0 {
+		return value[:index]
+	}
+	return value
 }
 
 func boundedLine(value string, width int) string {

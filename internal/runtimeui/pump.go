@@ -137,7 +137,9 @@ func (s *service) refreshRenamedTitle(active *activeRun, messages []Message, ref
 	if !settled {
 		return false
 	}
-	refreshCtx, cancel := context.WithTimeout(s.ctx, titleRefreshTimeout)
+	// Bounded like the tool lookups so the pump loop never stalls long enough
+	// to overflow the tail buffer.
+	refreshCtx, cancel := context.WithTimeout(s.ctx, toolLookupTimeout)
 	defer cancel()
 	record, err := s.store.GetSession(refreshCtx, active.conv.id)
 	if err != nil || record.Title == active.conv.title {
@@ -155,13 +157,16 @@ func (a *activeRun) requestInterrupt(reason string) {
 	}
 }
 
+// settleBudget bounds the terminal projection and title refresh so shutdown,
+// which waits for the pump, stays inside the CLI's two-second close budget.
+const settleBudget = time.Second
+
 func (s *service) finishPump(active *activeRun, initial Snapshot, result agentruntime.Result, version uint64, resync bool) {
-	settledCtx := context.WithoutCancel(s.ctx)
+	settledCtx, cancelSettle := context.WithTimeout(context.WithoutCancel(s.ctx), settleBudget)
+	defer cancelSettle()
 	conv := active.conv
 	messages, err := loadHistory(settledCtx, s.store, conv.id)
-	refreshCtx, cancel := context.WithTimeout(settledCtx, titleInitializationTimeout)
-	s.refreshTitle(refreshCtx, &conv)
-	cancel()
+	s.refreshTitle(settledCtx, &conv)
 	active.conv = conv
 	active.cancelTail()
 	active.cancelRun()
@@ -185,15 +190,22 @@ func (s *service) finishPump(active *activeRun, initial Snapshot, result agentru
 			}
 		}
 	}
-	s.clearActive(active)
-	active.run.finish(terminal)
+	s.settle(active, terminal)
 }
 
 func (s *service) finishPumpFallback(active *activeRun, initial Snapshot, version uint64) {
 	active.cancelTail()
 	active.cancelRun()
+	s.settle(active, Snapshot{RunID: active.handle.RunID(), Version: version, Terminal: true, Resync: true, Messages: initial.Messages, Phase: PhaseIdle, Notice: NoticeUnavailable, Conversation: active.conv.info()})
+}
+
+// settle stores the final snapshot before the service becomes idle, so a
+// selection can never begin while the old run's terminal state is missing,
+// and only then releases consumers waiting on Finished.
+func (s *service) settle(active *activeRun, terminal Snapshot) {
+	active.run.store(terminal)
 	s.clearActive(active)
-	active.run.finish(Snapshot{RunID: active.handle.RunID(), Version: version, Terminal: true, Resync: true, Messages: initial.Messages, Phase: PhaseIdle, Notice: NoticeUnavailable, Conversation: active.conv.info()})
+	active.run.release()
 }
 
 func (s *service) clearActive(active *activeRun) {

@@ -64,8 +64,10 @@ func secureDatabase(path string) error {
 	return nil
 }
 
-// ownedByCurrentUser is the shared ownership check for every private state
-// file: directories, database files, and preference records.
+// OwnedByCurrentUser is the shared ownership check for every private state
+// file: directories, database files, lock files, and preference records.
+func OwnedByCurrentUser(info os.FileInfo) bool { return ownedByCurrentUser(info) }
+
 func ownedByCurrentUser(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Geteuid()

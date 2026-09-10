@@ -36,6 +36,7 @@ const (
 	noticePreferencesInvalid    = "Workspace preferences are invalid; choose another state directory."
 	noticeRenameFailed          = "The conversation could not be renamed."
 	noticeRenameInvalid         = "Enter a nonblank title of at most 256 characters."
+	noticeRenameClipped         = "The pasted title was clipped to 256 characters."
 	noticeDraftBudget           = "Send or clear the current draft before switching conversations."
 	noticeReconcileRequired     = "Selection unconfirmed. Press R to retry or Ctrl+C to quit."
 	noticeCreatedNotSelected    = "The new conversation was created but could not be selected."
@@ -111,10 +112,11 @@ func (m *Model) openConversationPicker() tea.Cmd {
 func (m *Model) listCmd(cursors []string) tea.Cmd {
 	ctx, op := m.beginOperation(convLoading)
 	cursor := cursors[len(cursors)-1]
+	generation := m.current.Generation
 	service := m.service
 	return func() tea.Msg {
 		page, err := service.ListConversations(ctx, cursor)
-		return directoryLoadedMsg{op: op, cursors: cursors, page: page, err: err}
+		return directoryLoadedMsg{op: op, generation: generation, cursors: cursors, page: page, err: err}
 	}
 }
 
@@ -149,7 +151,7 @@ func (m *Model) beginSelect(id session.ID) tea.Cmd {
 }
 
 func (m *Model) applyDirectoryResult(msg directoryLoadedMsg) {
-	if m.conv.mode != convLoading || msg.op != m.conv.op {
+	if m.conv.mode != convLoading || msg.op != m.conv.op || msg.generation != m.current.Generation {
 		return
 	}
 	m.cancelConversationRequest()
@@ -193,11 +195,15 @@ func (m *Model) applyCreatedResult(msg conversationCreatedMsg) tea.Cmd {
 		case errors.Is(msg.err, runtimeui.ErrReconciliationRequired):
 			m.conv.mode = convReconcile
 			m.conv.err = noticeReconcileRequired
-		case errors.Is(msg.err, runtimeui.ErrPreferenceFailed) && msg.result.CommittedID != "":
+		case errors.Is(msg.err, runtimeui.ErrClosing):
+			m.closeConversationDialog()
+		case msg.result.CommittedID != "":
+			// The session exists durably; offer selection retry, never a
+			// silent close that could disagree with the persisted selection.
 			m.conv.mode = convRetrySelect
 			m.conv.pendingID = msg.result.CommittedID
 			m.conv.err = noticeCreatedNotSelected
-		case errors.Is(msg.err, context.Canceled), errors.Is(msg.err, runtimeui.ErrClosing):
+		case errors.Is(msg.err, context.Canceled):
 			m.closeConversationDialog()
 		case errors.Is(msg.err, runtimeui.ErrPreferenceInvalid):
 			m.closeConversationDialog()
@@ -220,7 +226,7 @@ func (m *Model) applySelectedResult(msg conversationSelectedMsg) tea.Cmd {
 	}
 	m.cancelConversationRequest()
 	if msg.err != nil {
-		rename := m.conv.renameAfterSelect
+		m.conv.renameAfterSelect = false
 		switch {
 		case errors.Is(msg.err, runtimeui.ErrReconciliationRequired):
 			m.conv.mode = convReconcile
@@ -240,7 +246,6 @@ func (m *Model) applySelectedResult(msg conversationSelectedMsg) tea.Cmd {
 			m.closeConversationDialog()
 			m.snapshot.Notice = noticeConversationUnavail
 		}
-		_ = rename
 		return nil
 	}
 	rename := m.conv.renameAfterSelect

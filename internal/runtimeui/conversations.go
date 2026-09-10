@@ -17,7 +17,7 @@ const (
 	titleInitializationTimeout = 2 * time.Second
 	titleRefreshTimeout        = 500 * time.Millisecond
 	firstMessagePageSize       = 20
-	maxDirectoryScanPages      = 10000
+	maxDirectoryScanPages      = 200
 )
 
 // conversation is the controller's copy of one durable conversation. Identity
@@ -165,6 +165,31 @@ func (s *service) highestNumber(ctx context.Context) (uint64, error) {
 	return 0, fmt.Errorf("%w", ErrDirectoryUnavailable)
 }
 
+// reconcileCounter raises a fresh (missing) preference counter above every
+// immutable number already stored, so a lost record never reuses a number.
+func (s *service) reconcileCounter(ctx context.Context, locked *platform.LockedPreferences) error {
+	if !locked.Fresh() {
+		return nil
+	}
+	highest, err := s.highestNumber(ctx)
+	if err != nil {
+		return err
+	}
+	if highest == 0 {
+		return nil
+	}
+	_, err = locked.EnsureNextNumber(highest + 1)
+	return err
+}
+
+// reserveNumber reconciles a fresh counter first, then consumes the next number.
+func (s *service) reserveNumber(ctx context.Context, locked *platform.LockedPreferences) (uint64, platform.PreferenceWrite, error) {
+	if err := s.reconcileCounter(ctx, locked); err != nil {
+		return 0, platform.PreferenceWrite{}, err
+	}
+	return locked.ReserveNumber()
+}
+
 // projectConversation builds the destination snapshot before any selection is
 // committed. It never runs a model or takes a run lease.
 func (s *service) projectConversation(ctx context.Context, conv *conversation) (Snapshot, *session.Run, error) {
@@ -185,6 +210,11 @@ func (s *service) projectConversation(ctx context.Context, conv *conversation) (
 
 func (s *service) retryDefaultTitle(ctx context.Context, conv *conversation) {
 	if conv.title != "" {
+		return
+	}
+	// A cheap root read avoids opening a writer transaction for a
+	// conversation that has no admitted message yet.
+	if _, found, err := firstUserText(ctx, s.store, conv.id); err != nil || !found {
 		return
 	}
 	title, err := ensureDefaultTitle(ctx, s.store, s.workspace.ID, conv.id, conv.number)
@@ -336,25 +366,17 @@ func (s *service) resolveSelection(ctx context.Context) (Snapshot, error) {
 			}
 		}
 		if chosen.id == "" {
-			if locked.Fresh() {
-				highest, err := s.highestNumber(a.ctx)
-				if err != nil {
-					return err
-				}
-				if highest > 0 {
-					if _, err := locked.EnsureNextNumber(highest + 1); err != nil {
-						return err
-					}
-				}
-			}
 			newest, found, err := s.newestConversation(a.ctx)
 			if err != nil {
 				return err
 			}
 			if found {
 				chosen = newest
+				if err := s.reconcileCounter(a.ctx, locked); err != nil {
+					return err
+				}
 			} else {
-				number, write, err := locked.ReserveNumber()
+				number, write, err := s.reserveNumber(a.ctx, locked)
 				if err != nil {
 					return err
 				}
@@ -372,6 +394,8 @@ func (s *service) resolveSelection(ctx context.Context) (Snapshot, error) {
 			}
 			warning = warning || write.DurabilityWarning
 		}
+		// The selection is persisted: caller cancellation no longer applies.
+		a.stopCallerCancel()
 		return nil
 	})
 	if err != nil {
@@ -389,9 +413,13 @@ func (s *service) resolveSelection(ctx context.Context) (Snapshot, error) {
 func (s *service) commitSelection(a *attempt, chosen conversation, snapshot Snapshot, recovery *session.Run, notice string, warning bool) (Snapshot, error) {
 	s.mu.Lock()
 	if s.state >= stateClosing || s.attempt != a {
+		closing := s.state >= stateClosing
 		s.mu.Unlock()
 		s.abortAttempt(a)
-		return Snapshot{}, ErrClosing
+		if closing {
+			return Snapshot{}, ErrClosing
+		}
+		return Snapshot{}, ErrBusy
 	}
 	s.attempt = nil
 	s.generation++
@@ -516,7 +544,7 @@ func (s *service) CreateConversation(ctx context.Context, expected uint64) (Sele
 	var committed session.ID
 	warning := false
 	err = s.prefs.WithWorkspace(a.ctx, s.workspace.ID, func(locked *platform.LockedPreferences) error {
-		number, write, err := locked.ReserveNumber()
+		number, write, err := s.reserveNumber(a.ctx, locked)
 		if err != nil {
 			return err
 		}
@@ -531,6 +559,8 @@ func (s *service) CreateConversation(ctx context.Context, expected uint64) (Sele
 			return err
 		}
 		warning = warning || remembered.DurabilityWarning
+		// The selection is persisted: caller cancellation no longer applies.
+		a.stopCallerCancel()
 		return nil
 	})
 	if err != nil {
@@ -597,13 +627,11 @@ func (s *service) RenameConversation(ctx context.Context, id session.ID, expecte
 		return ConversationInfo{}, fmt.Errorf("%w", ErrConversationUnavailable)
 	}
 	_, writeErr := s.store.SetSessionTitle(a.ctx, session.SessionTitleRequest{SessionID: id, WorkspaceID: s.workspace.ID, Title: normalized})
-	conv := a.conv
 	// Reconcile to the committed title even when the write raced cancellation.
 	refreshCtx, cancel := context.WithTimeout(s.ctx, titleRefreshTimeout)
 	record, readErr := s.store.GetSession(refreshCtx, id)
 	cancel()
 	if readErr == nil {
-		conv.title = record.Title
 		s.updateTitle(id, record.Title)
 	}
 	if writeErr != nil && (readErr != nil || record.Title != normalized) {
@@ -617,7 +645,6 @@ func (s *service) RenameConversation(ctx context.Context, id session.ID, expecte
 		}
 	}
 	if readErr != nil {
-		conv.title = normalized
 		s.updateTitle(id, normalized)
 	}
 	s.mu.Lock()

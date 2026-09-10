@@ -112,6 +112,9 @@ func AcquireLock(ctx context.Context, path string, timeout time.Duration) (func(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The Lstat-then-open pair leaves a small window, which is closed by the
+	// parent directory: every lock lives in a 0700 directory verified to be
+	// owned by the current user, so no other principal can swap the path.
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
 			return nil, ErrLockUnavailable
@@ -145,10 +148,26 @@ func (p *PreferenceStore) WithWorkspace(ctx context.Context, workspaceID string,
 	}
 	defer release()
 	locked := &LockedPreferences{store: p, workspaceID: workspaceID, path: filepath.Join(p.directory, workspaceID+".json")}
+	sweepTemporaries(p.directory, workspaceID)
 	if err := locked.load(); err != nil {
 		return err
 	}
 	return fn(locked)
+}
+
+// sweepTemporaries removes partial temporary siblings left by a crash between
+// creation and rename. It runs only under the workspace lock, so no writer
+// can be mid-replacement for this workspace.
+func sweepTemporaries(directory, workspaceID string) {
+	matches, err := filepath.Glob(filepath.Join(directory, "."+workspaceID+".tmp-*"))
+	if err != nil {
+		return
+	}
+	for _, match := range matches {
+		if info, err := os.Lstat(match); err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			_ = os.Remove(match)
+		}
+	}
 }
 
 // ReserveConversationNumber reserves the next number under the workspace lock.

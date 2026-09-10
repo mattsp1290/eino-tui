@@ -120,36 +120,55 @@ func (s *service) Load(ctx context.Context) (Snapshot, error) {
 	return s.loadSelected(ctx)
 }
 
-func (s *service) loadSelected(ctx context.Context) (Snapshot, error) {
+// loadSelected projects the captured selection as a counted, cancellable
+// read. The returned identity is always the conversation whose history was
+// read; a selection that changed underneath is reported as stale.
+func (s *service) loadSelected(caller context.Context) (Snapshot, error) {
+	ctx, release, err := s.beginRead(caller)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer release()
 	s.mu.Lock()
+	if s.selected == nil {
+		s.mu.Unlock()
+		return Snapshot{}, ErrNoConversation
+	}
 	conv := *s.selected
 	s.mu.Unlock()
 	s.retryDefaultTitle(ctx, &conv)
 	messages, err := loadHistory(ctx, s.store, conv.id)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
+		if ctx.Err() != nil {
+			return Snapshot{}, ctx.Err()
+		}
 		return Snapshot{}, fmt.Errorf("%w", ErrUnavailable)
 	}
 	active, activeErr := s.store.ActiveRun(ctx, conv.id)
-	if activeErr == nil && !active.Terminal() {
-		s.mu.Lock()
-		if (s.state == stateIdle || s.state == stateWaiting) && s.selected != nil && s.selected.id == conv.id {
+	if activeErr != nil && !errors.Is(activeErr, session.ErrNotFound) {
+		if ctx.Err() != nil {
+			return Snapshot{}, ctx.Err()
+		}
+		return Snapshot{}, fmt.Errorf("%w", ErrUnavailable)
+	}
+	waiting := activeErr == nil && !active.Terminal()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.selected == nil || s.selected.id != conv.id || s.selected.generation != conv.generation {
+		return Snapshot{}, ErrStaleGeneration
+	}
+	info := s.selected.info()
+	if waiting {
+		if s.state == stateIdle || s.state == stateWaiting {
 			s.state = stateWaiting
 			s.recoveryRun = active
 		}
-		info := s.currentInfoLocked()
-		s.mu.Unlock()
 		return Snapshot{Messages: messages, Phase: PhaseRecoveryWaiting, Notice: NoticeRecoveryWaiting, RecoveryAt: active.LeaseUntil, Conversation: info}, nil
 	}
-	if activeErr != nil && !errors.Is(activeErr, session.ErrNotFound) {
-		return Snapshot{}, fmt.Errorf("%w", ErrUnavailable)
-	}
-	s.mu.Lock()
-	if s.state == stateWaiting && s.selected != nil && s.selected.id == conv.id {
+	if s.state == stateWaiting {
 		s.state = stateIdle
 		s.recoveryRun = session.Run{}
 	}
-	info := s.currentInfoLocked()
-	s.mu.Unlock()
 	return Snapshot{Messages: messages, Phase: PhaseIdle, Conversation: info}, nil
 }
 
@@ -287,7 +306,7 @@ func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events
 	if prompt != "" && conv.title == "" {
 		// The message is durably admitted. A title failure is metadata-only:
 		// keep the handle, consume the draft, and retry from history later.
-		titleCtx, cancel := context.WithTimeout(s.ctx, titleInitializationTimeout)
+		titleCtx, cancel := context.WithTimeout(s.readCtx, titleInitializationTimeout)
 		title, err := ensureDefaultTitle(titleCtx, s.store, s.workspace.ID, conv.id, conv.number)
 		cancel()
 		if err != nil {

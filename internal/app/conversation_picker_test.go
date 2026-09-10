@@ -389,6 +389,13 @@ func TestConversationViewsStayBoundedAtSmallSizes(t *testing.T) {
 	model := readyConversationModel(&fakeService{})
 	model.conv.page = twoConversations()
 	model.conv.page.Items[0].Title = strings.Repeat("界", 300) + "\x1b]0;SECRET\a"
+	for height := 1; height <= 6; height++ {
+		model.conv.mode = convClosed
+		model.resize(60, height)
+		if lines := strings.Count(model.View().Content, "\n") + 1; lines > height {
+			t.Fatalf("chat view height=%d rendered %d lines: %q", height, lines, model.View().Content)
+		}
+	}
 	for _, mode := range []conversationMode{convLoading, convChoosing, convCreating, convSelecting, convSaving, convRetrySelect, convReconcile, convRenaming} {
 		model.conv.mode = mode
 		model.conv.input.SetValue("title")

@@ -33,11 +33,22 @@ func (r *runStream) publish(snapshot Snapshot) bool {
 	}
 }
 
+// finish stores the terminal snapshot and releases consumers in one step.
 func (r *runStream) finish(snapshot Snapshot) {
+	r.store(snapshot)
+	r.release()
+}
+
+// store makes the terminal snapshot available before consumers are released.
+func (r *runStream) store(snapshot Snapshot) {
 	r.mu.Lock()
 	r.terminal = snapshot
 	r.terminalReady = true
 	r.mu.Unlock()
+}
+
+// release closes the update stream and the Finished signal, in that order.
+func (r *runStream) release() {
 	close(r.updates)
 	close(r.finished)
 }

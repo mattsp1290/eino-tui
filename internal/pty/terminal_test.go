@@ -203,7 +203,7 @@ func TestProductionBinaryNoAuthCommandsNeverAcquireTerminal(t *testing.T) {
 		want string
 	}{
 		{name: "help", args: []string{"--help"}, want: "Usage: eino-tui"},
-		{name: "version", args: []string{"--version"}, want: "0.3.0"},
+		{name: "version", args: []string{"--version"}, want: "0.4.0"},
 		{name: "invalid model", args: []string{"--model", "gpt-5.5\nTOKEN"}, want: "invalid command or model"},
 	}
 	for _, test := range tests {
@@ -596,18 +596,23 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)
 	}
-	canonical, err := platform.CanonicalWorkspace(workspace)
+	ctx := context.Background()
+	paths, err := platform.PrepareState(ctx, state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := runtimeui.Open(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, runtimeui.Config{
+	ws, err := platform.IdentifyWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := runtimeui.Open(ctx, paths, ws, runtimeui.Config{
 		Resolver:  demomodel.DynamicResolver(nil),
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := chat.Load(context.Background())
+	snapshot, err := chat.Load(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
