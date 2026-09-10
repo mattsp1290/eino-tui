@@ -12,6 +12,7 @@ import (
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/stream"
+	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
@@ -21,6 +22,16 @@ func (activeSeedStore) GetRun(context.Context, session.RunID) (session.Run, erro
 	return session.Run{ID: "active", SessionID: "s", Status: session.RunRunning}, nil
 }
 func (activeSeedStore) Close() error { return nil }
+func (activeSeedStore) ListSessions(context.Context, session.SessionDiscoveryQuery) (session.SessionDiscoveryPage, error) {
+	return session.SessionDiscoveryPage{}, nil
+}
+
+// GetSession backs finishPump's post-run title refresh. Returning the seeded
+// title keeps that refresh a no-op instead of panicking on the fixture's
+// unimplemented embedded session.Store.
+func (activeSeedStore) GetSession(context.Context, session.ID) (session.Session, error) {
+	return session.Session{ID: "s", Title: "seed"}, nil
+}
 
 type seedHandle struct{ done chan agentruntime.Result }
 
@@ -41,8 +52,16 @@ func TestAdmittedHistoryRespectsLiveBudgetsAndReconciles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := makeActiveSeedStore(t, test.texts, test.tools)
-			chat := newService(ctx, store, stream.NewTail(8), nil, nil, "s", config.Snapshot{})
-			a, err := chat.beginAttempt(ctx, stateIdle, stateStarting)
+			paths, workspace := fixtureWorkspace(t)
+			chat := newService(ctx, store, stream.NewTail(8), nil, nil, platform.NewPreferenceStore(paths.Workspaces), workspace, config.Snapshot{})
+			selectForTest(chat, "s")
+			// The fixture store has no working WithinTx; give the conversation a
+			// title up front so publishAdmitted's default-title initialization
+			// (irrelevant to this test) never runs.
+			chat.mu.Lock()
+			chat.selected.title = "seed"
+			chat.mu.Unlock()
+			a, err := chat.beginAttempt(ctx, stateIdle, stateStarting, true)
 			if err != nil {
 				t.Fatal(err)
 			}

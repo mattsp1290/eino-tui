@@ -77,7 +77,7 @@ func altM() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'm', Text: "m", Mod: 
 
 func TestPickerIsLazyCachedAndExplicitlyRefreshable(t *testing.T) {
 	catalog := &scriptedCatalog{results: []catalogResult{{entries: pickerCatalog()}, {entries: nil}}}
-	model := New(context.Background(), &fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}}, pickerConfig(catalog))
+	model := newTestModel(&fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}}, pickerConfig(catalog))
 	if catalog.calls != 0 {
 		t.Fatal("New fetched catalog")
 	}
@@ -117,7 +117,7 @@ func TestPickerIsLazyCachedAndExplicitlyRefreshable(t *testing.T) {
 
 func TestPickerGenerationFailureAndCancelPreserveDraft(t *testing.T) {
 	catalog := &scriptedCatalog{results: []catalogResult{{err: errors.New("TOKEN /secret")}, {entries: pickerCatalog()}}}
-	model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+	model := newTestModel(&fakeService{}, pickerConfig(catalog))
 	model.textarea.SetValue("first\nsecond")
 	_, firstCommand := model.Update(altM())
 	oldGeneration := model.picker.generation
@@ -149,7 +149,7 @@ func TestPickerGenerationFailureAndCancelPreserveDraft(t *testing.T) {
 
 func TestPickerFailureHasNoStaleCacheAndBusyPhasesIgnoreOpen(t *testing.T) {
 	catalog := &scriptedCatalog{results: []catalogResult{{entries: pickerCatalog()}, {err: errors.New("CANARY")}, {entries: pickerCatalog()}}}
-	model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+	model := newTestModel(&fakeService{}, pickerConfig(catalog))
 	_, cmd := model.Update(altM())
 	model.Update(cmd())
 	_, refresh := model.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
@@ -175,7 +175,7 @@ func TestPickerFailureHasNoStaleCacheAndBusyPhasesIgnoreOpen(t *testing.T) {
 func TestPickerReleasesCompletedAndCanceledRequestContexts(t *testing.T) {
 	for _, result := range []catalogResult{{entries: pickerCatalog()}, {err: errors.New("fixed failure")}} {
 		catalog := &contextCatalog{result: result, entered: make(chan context.Context, 1)}
-		model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+		model := newTestModel(&fakeService{}, pickerConfig(catalog))
 		_, command := model.Update(altM())
 		message := command()
 		requestContext := <-catalog.entered
@@ -194,7 +194,7 @@ func TestPickerReleasesCompletedAndCanceledRequestContexts(t *testing.T) {
 
 	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'c', Text: "c", Mod: tea.ModCtrl}} {
 		catalog := &contextCatalog{entered: make(chan context.Context, 1), exited: make(chan struct{}), block: true}
-		model := New(context.Background(), &fakeService{}, pickerConfig(catalog))
+		model := newTestModel(&fakeService{}, pickerConfig(catalog))
 		_, command := model.Update(altM())
 		completion := make(chan tea.Msg, 1)
 		go func() { completion <- command() }()
@@ -222,7 +222,7 @@ func TestPickerReleasesCompletedAndCanceledRequestContexts(t *testing.T) {
 }
 
 func TestSelectorFullViewRespectsShortHeightAndKeepsControls(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
 	model.reconcileEffort()
 	for _, height := range []int{1, 2, 3, 4, 5} {
@@ -245,7 +245,7 @@ func TestSelectorFullViewRespectsShortHeightAndKeepsControls(t *testing.T) {
 }
 
 func TestPickerCompactLayoutsPreserveFeasibleSemantics(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
 	model.reconcileEffort()
 	for _, width := range []int{8, 12, 18, 24, 60} {
@@ -274,7 +274,7 @@ func TestPickerCompactLayoutsPreserveFeasibleSemantics(t *testing.T) {
 }
 
 func TestPickerCompactStatusLayoutsPreserveControls(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	for _, mode := range []pickerMode{pickerLoading, pickerFailed, pickerEmpty} {
 		model.picker.mode = mode
 		for _, width := range []int{8, 12, 18, 24} {
@@ -292,7 +292,7 @@ func TestPickerCompactStatusLayoutsPreserveControls(t *testing.T) {
 }
 
 func TestAppliedMarkerRetainsNonDefaultEffortOffHighlight(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.selected.effort = codexmodel.ReasoningEffortLow
 	model.picker = pickerState{mode: pickerReady, cache: pickerCatalog(), cacheValid: true, highlightedModel: 1}
 	model.reconcileEffort()
@@ -310,7 +310,7 @@ func TestPickerRendersOnlyBoundedVisibleWindow(t *testing.T) {
 			SupportedEfforts: []codexmodel.ReasoningEffort{{ID: "medium"}},
 		}
 	}
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.picker = pickerState{mode: pickerReady, cache: entries, cacheValid: true, highlightedModel: 128}
 	view := model.pickerView(24, 6)
 	if strings.Count(view, "\n") >= 6 || len(strings.Split(view, "\n")) > 6 || strings.Contains(view, "model-000") || !strings.Contains(view, "model-128") {

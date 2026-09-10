@@ -203,7 +203,7 @@ func TestProductionBinaryNoAuthCommandsNeverAcquireTerminal(t *testing.T) {
 		want string
 	}{
 		{name: "help", args: []string{"--help"}, want: "Usage: eino-tui"},
-		{name: "version", args: []string{"--version"}, want: "0.3.0"},
+		{name: "version", args: []string{"--version"}, want: "0.4.0"},
 		{name: "invalid model", args: []string{"--model", "gpt-5.5\nTOKEN"}, want: "invalid command or model"},
 	}
 	for _, test := range tests {
@@ -250,7 +250,7 @@ func TestFixtureTerminalStreamingReplayAndRestoration(t *testing.T) {
 	workspace := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state")
 	process := startTerminal(t, fixture, nil, workspace, state)
-	process.waitText(t, "Codex subscription", 3*time.Second)
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
 	process.write(t, "hello λ\r")
 	process.waitText(t, "response:", 3*time.Second)
 	process.waitText(t, "transport completed.", 3*time.Second)
@@ -286,7 +286,7 @@ func TestFixtureReadOnlyToolActivityAndReplay(t *testing.T) {
 	}
 	state := filepath.Join(t.TempDir(), "state")
 	process := startTerminal(t, fixtureBinary, []string{"--tool-read"}, workspace, state)
-	process.waitText(t, "Codex subscription", 3*time.Second)
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
 	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 8, Cols: 18}); err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +375,7 @@ func TestModelSelectorAppliesNextTurnAndRefreshCancelPreservesSecondDraft(t *tes
 	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
 	process := startTerminal(t, fixture, []string{"--block-catalog-refresh"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
 	process.waitText(t, "gpt-5.5 (gpt-5.5) · medium", 3*time.Second)
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
 	process.write(t, "\x1b[200~first line\nsecond line\x1b[201~")
 	process.write(t, "\x1bm")
 	process.waitText(t, "GPT-5.5 Fixture", 3*time.Second)
@@ -445,7 +446,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 
 	interrupted := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-	interrupted.waitText(t, "Codex subscription", 3*time.Second)
+	interrupted.waitText(t, "Codex subscription ready", 3*time.Second)
 	interrupted.write(t, "interrupt this\r")
 	interrupted.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
 	interrupted.write(t, "\x04")
@@ -468,7 +469,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	}
 
 	killed := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-	killed.waitText(t, "Codex subscription", 3*time.Second)
+	killed.waitText(t, "Codex subscription ready", 3*time.Second)
 	killed.write(t, "hard kill turn\r")
 	// Model output proves the run was persisted; prompt echo can precede submit.
 	killed.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
@@ -501,7 +502,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 		})
 	}
 	modelFailure := startTerminal(t, fixture, []string{"--model-error"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
-	modelFailure.waitText(t, "Codex subscription", 3*time.Second)
+	modelFailure.waitText(t, "Codex subscription ready", 3*time.Second)
 	modelFailure.write(t, "do not leak this\r")
 	modelFailure.waitText(t, "Codex provider could not complete", 3*time.Second)
 	modelFailure.write(t, "\x03")
@@ -511,7 +512,7 @@ func TestInterruptHardKillRecoveryAndPanicPolicies(t *testing.T) {
 	}
 
 	wedged := startTerminal(t, fixture, []string{"--wedged-close"}, t.TempDir(), filepath.Join(t.TempDir(), "state"))
-	wedged.waitText(t, "Codex subscription", 3*time.Second)
+	wedged.waitText(t, "Codex subscription ready", 3*time.Second)
 	wedged.write(t, "\x03")
 	err := wedged.waitExit(t, 4*time.Second)
 	var exitErr *exec.ExitError
@@ -538,7 +539,7 @@ func TestActiveCtrlCAndSIGTERMSettleBeforeExit(t *testing.T) {
 			workspace := t.TempDir()
 			state := filepath.Join(t.TempDir(), "state")
 			process := startTerminal(t, fixture, []string{"--long"}, workspace, state)
-			process.waitText(t, "Codex subscription", 3*time.Second)
+			process.waitText(t, "Codex subscription ready", 3*time.Second)
 			prompt := "active " + scenario.name
 			process.write(t, prompt+"\r")
 			process.waitText(t, "selection gpt-5.5 · medium", 3*time.Second)
@@ -573,7 +574,7 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	workspace := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state")
 	process := startTerminal(t, fixture, nil, workspace, state)
-	process.waitText(t, "Codex subscription", 3*time.Second)
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
 	if err := pty.Setsize(process.file, &pty.Winsize{Rows: 8, Cols: 18}); err != nil {
 		t.Fatal(err)
 	}
@@ -596,18 +597,23 @@ func TestResizeAndBracketedMultilinePaste(t *testing.T) {
 	if err := process.waitExit(t, 3*time.Second); err != nil {
 		t.Fatalf("exit: %v", err)
 	}
-	canonical, err := platform.CanonicalWorkspace(workspace)
+	ctx := context.Background()
+	paths, err := platform.PrepareState(ctx, state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := runtimeui.Open(context.Background(), filepath.Join(state, "sessions.db"), platform.WorkspaceSessionID(canonical), canonical, runtimeui.Config{
+	ws, err := platform.IdentifyWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := runtimeui.Open(ctx, paths, ws, runtimeui.Config{
 		Resolver:  demomodel.DynamicResolver(nil),
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := chat.Load(context.Background())
+	snapshot, err := chat.Load(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

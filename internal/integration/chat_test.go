@@ -2,23 +2,32 @@ package integration
 
 import (
 	"context"
+	"database/sql"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mattsp1290/eino-agent/model"
-	"github.com/mattsp1290/eino-agent/session"
+	agentsqlite "github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 )
 
-func openDemoFixture(ctx context.Context, database string, id session.ID, workspace string, resolver model.Resolver) (runtimeui.Service, error) {
-	return runtimeui.Open(ctx, database, id, workspace, runtimeui.Config{
+func openDemoFixture(ctx context.Context, paths platform.Paths, workspace platform.Workspace, resolver model.Resolver) (runtimeui.Service, error) {
+	service, err := runtimeui.Open(ctx, paths, workspace, runtimeui.Config{
 		Resolver:  resolver,
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := service.Load(ctx); err != nil {
+		return nil, err
+	}
+	return service, nil
 }
 
 func demoStartConfig() runtimeui.StartConfig {
@@ -28,15 +37,42 @@ func demoStartConfig() runtimeui.StartConfig {
 	}
 }
 
+// openInspectionStore opens a direct, read-only inspection handle onto an
+// already-initialized conversation database. It never migrates the schema;
+// the runtime under test owns initialization. Callers close the returned
+// *sql.DB, not the store.
+func openInspectionStore(t *testing.T, ctx context.Context, database string) (*agentsqlite.Store, *sql.DB) {
+	t.Helper()
+	location := url.URL{Scheme: "file", Path: database, OmitHost: true}
+	query := url.Values{}
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	location.RawQuery = query.Encode()
+	db, err := sql.Open("sqlite", location.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	store, err := agentsqlite.New(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	return store, db
+}
+
 func TestProductionWiringDurableJourney(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := platform.WorkspaceSessionID(workspace)
-	service, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := openDemoFixture(ctx, paths, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +103,7 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 	if err := service.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
+	reopened, err := openDemoFixture(ctx, paths, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +118,12 @@ func TestProductionWiringDurableJourney(t *testing.T) {
 
 func TestBackpressuredConsumerReceivesAuthoritativeTerminalReplay(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +140,7 @@ func TestBackpressuredConsumerReceivesAuthoritativeTerminalReplay(t *testing.T) 
 			return nil
 		}
 	}
-	service, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.DynamicScriptedResolver(waiter, chunks))
+	service, err := openDemoFixture(ctx, paths, workspace, demomodel.DynamicScriptedResolver(waiter, chunks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +180,16 @@ func TestBackpressuredConsumerReceivesAuthoritativeTerminalReplay(t *testing.T) 
 
 func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := platform.WorkspaceSessionID(workspace)
-	owner, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(demomodel.TimerWait(10*time.Second)))
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := openDemoFixture(ctx, paths, workspace, demomodel.DynamicResolver(demomodel.TimerWait(10*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +197,7 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	contender, err := openDemoFixture(ctx, paths.Database, id, workspace, demomodel.DynamicResolver(nil))
+	contender, err := openDemoFixture(ctx, paths, workspace, demomodel.DynamicResolver(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,46 +234,6 @@ func TestLiveLeaseContentionWaitsWithoutStealingThenRecoversTerminalState(t *tes
 		t.Fatal("terminal recovery did not finish")
 	}
 	if err := contender.Close(closeCtx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestWorkspaceV1HistoryIsNotLoadedByV2(t *testing.T) {
-	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyID := session.ID("workspace-v1-legacy-fixture")
-	legacy, err := openDemoFixture(ctx, paths.Database, legacyID, workspace, demomodel.DynamicResolver(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	started, err := legacy.Start(ctx, "legacy demo prompt", demoStartConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range started.Run.Finished() {
-	}
-	closeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	if err := legacy.Close(closeCtx); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	cancel()
-
-	current, err := openDemoFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.DynamicResolver(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	replay, err := current.Load(ctx)
-	if err != nil || len(replay.Messages) != 0 {
-		t.Fatalf("v2 loaded v1 history: %#v, %v", replay, err)
-	}
-	closeCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := current.Close(closeCtx); err != nil {
 		t.Fatal(err)
 	}
 }

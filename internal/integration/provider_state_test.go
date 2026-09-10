@@ -16,7 +16,6 @@ import (
 
 	"github.com/mattsp1290/eino-agent/model"
 	"github.com/mattsp1290/eino-agent/session"
-	agentsqlite "github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -91,16 +90,19 @@ func (t *recordingCodexTransport) RoundTrip(request *http.Request) (*http.Respon
 
 func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	transport := &recordingCodexTransport{}
 	httpClient := &http.Client{Transport: transport}
-	sessionID := platform.WorkspaceSessionID(workspace)
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, httpClient)
+	service := openCodexFixture(t, ctx, paths, workspace, httpClient)
 	first, err := service.Start(ctx, "first prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortLow))
 	if err != nil {
 		t.Fatal(err)
@@ -119,39 +121,36 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 		t.Fatalf("turn one reasoning=%q err=%v", firstPayload.Reasoning.Effort, err)
 	}
 	closeRuntime(t, service)
-	store, err := agentsqlite.Open(ctx, paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, db := openInspectionStore(t, ctx, paths.Database)
 	requestBatch, err := store.ListModelRequests(ctx, firstTerminal.RunID, session.ModelRequestCursor{Limit: 10})
 	if err != nil {
-		store.Close()
+		db.Close()
 		t.Fatal(err)
 	}
 	if len(requestBatch.Records) != 1 {
-		store.Close()
+		db.Close()
 		t.Fatalf("model request records=%d", len(requestBatch.Records))
 	}
 	var safeConfig map[string]string
 	if err := json.Unmarshal(requestBatch.Records[0].SafeCallConfig, &safeConfig); err != nil {
-		store.Close()
+		db.Close()
 		t.Fatal(err)
 	}
 	if len(safeConfig) != 1 || safeConfig[codexmodel.ReasoningEffortOptionKey] != codexmodel.ReasoningEffortLow {
-		store.Close()
+		db.Close()
 		t.Fatalf("safe call config=%s", requestBatch.Records[0].SafeCallConfig)
 	}
 	for _, forbidden := range []string{codexmodel.DefaultModel, "first prompt", "REASON_SECRET", "TOKEN"} {
 		if strings.Contains(string(requestBatch.Records[0].SafeCallConfig), forbidden) {
-			store.Close()
+			db.Close()
 			t.Fatalf("safe call config retained %q: %s", forbidden, requestBatch.Records[0].SafeCallConfig)
 		}
 	}
-	if err := store.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, httpClient)
+	reopened := openCodexFixture(t, ctx, paths, workspace, httpClient)
 	second, err := reopened.Start(ctx, "second prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortHigh))
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +172,7 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 	if err := json.Unmarshal(request, &payload); err != nil {
 		t.Fatalf("decode second request: %v", err)
 	}
-	if got := providerToolNames(t, payload.Tools); strings.Join(got, ",") != "file_read,file_list,glob,search" || payload.Reasoning.Effort != codexmodel.ReasoningEffortHigh {
+	if got := providerToolNames(t, payload.Tools); strings.Join(got, ",") != "file_read,file_list,glob,search,rename_conversation" || payload.Reasoning.Effort != codexmodel.ReasoningEffortHigh {
 		t.Fatalf("Codex request tools=%v effort=%q", got, payload.Reasoning.Effort)
 	}
 	var restored []string
@@ -196,16 +195,19 @@ func TestCodexReasoningStateSurvivesSQLiteReopenAndStaysPrivate(t *testing.T) {
 
 func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	transport := &recordingCodexTransport{}
 	client := &http.Client{Transport: transport}
-	sessionID := platform.WorkspaceSessionID(workspace)
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	first := openCodexFixtureWithClient(t, ctx, paths.Database, sessionID, workspace, client)
+	first := openCodexFixtureWithClient(t, ctx, paths, workspace, client)
 	started, err := first.Start(ctx, "seed cross-model state", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortLow))
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +216,7 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 	closeRuntime(t, first)
 
 	const nextModel = "gpt-5.6"
-	reopened := openCodexFixtureWithClient(t, ctx, paths.Database, sessionID, workspace, client)
+	reopened := openCodexFixtureWithClient(t, ctx, paths, workspace, client)
 	continued, err := reopened.Start(ctx, "continue with compatible model", codexStartConfig(nextModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -255,13 +257,17 @@ func TestCodexCompatibleModelSwitchRestoresReasoningState(t *testing.T) {
 
 func TestInvalidCodexTurnConfigurationPerformsNoProviderIO(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport := &recordingCodexTransport{}
-	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	for _, cfg := range []runtimeui.StartConfig{
 		codexStartConfig("bad model", codexmodel.ReasoningEffortMedium),
 		codexStartConfig(codexmodel.DefaultModel, "xhigh"),
@@ -278,14 +284,17 @@ func TestInvalidCodexTurnConfigurationPerformsNoProviderIO(t *testing.T) {
 
 func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionID := platform.WorkspaceSessionID(workspace)
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := &http.Client{Transport: &failureThenSuccessTransport{}}
-	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
+	service := openCodexFixture(t, ctx, paths, workspace, client)
 
 	failed, err := service.Start(ctx, "failed prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
@@ -313,7 +322,7 @@ func TestCodexProviderFailureKeepsFailedUserAndAllowsNextTurn(t *testing.T) {
 	closeRuntime(t, service)
 	assertDurableSecretsAbsent(t, paths.Database, "TOKEN", "/tmp/private", "prompt text", "leak")
 
-	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
+	reopened := openCodexFixture(t, ctx, paths, workspace, client)
 	replay, err := reopened.Load(ctx)
 	if err != nil || len(replay.Messages) != 3 || replay.Messages[0].Status != runtimeui.StatusFailed || replay.Messages[2].Content != "recovered answer" {
 		t.Fatalf("replay = %#v, %v", replay, err)
@@ -379,12 +388,16 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			workspace := t.TempDir()
+			workspaceDir := t.TempDir()
 			paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: test.transport})
+			workspace, err := platform.IdentifyWorkspace(workspaceDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: test.transport})
 			started, err := service.Start(ctx, "safe provider error prompt", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 			if err != nil {
 				t.Fatal(err)
@@ -410,13 +423,17 @@ func TestCodexProviderErrorsUseBoundedTypedNotices(t *testing.T) {
 
 func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport := &recordingCodexTransport{}
-	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	db, err := sql.Open("sqlite", paths.Database)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +454,10 @@ func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
 		t.Fatalf("terminal = %#v", terminal)
 	}
 	var assistantParts int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p JOIN messages m ON m.id = p.message_id WHERE m.run_id = ? AND m.role = 'assistant'`, terminal.RunID).Scan(&assistantParts); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p
+		JOIN messages m ON m.row_key = p.message_key
+		JOIN runs r ON r.row_key = m.run_key
+		WHERE r.id = ? AND m.role = 'assistant'`, []byte(terminal.RunID)).Scan(&assistantParts); err != nil {
 		t.Fatal(err)
 	}
 	if assistantParts != 0 {
@@ -448,15 +468,18 @@ func TestProviderStatePersistenceFailureLeavesNoAssistantParts(t *testing.T) {
 
 func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	transport := &recordingCodexTransport{}
 	client := &http.Client{Transport: transport}
-	sessionID := platform.WorkspaceSessionID(workspace)
-	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := openCodexFixture(t, ctx, paths, workspace, client)
 	started, err := service.Start(ctx, "seed provider state", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +494,7 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var partID string
+	var partID []byte
 	var record []byte
 	if err := db.QueryRowContext(ctx, `SELECT id, record FROM parts WHERE instr(CAST(record AS TEXT), '"Kind":"provider_state"') > 0 LIMIT 1`).Scan(&partID, &record); err != nil {
 		db.Close()
@@ -496,7 +519,7 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, client)
+	reopened := openCodexFixture(t, ctx, paths, workspace, client)
 	if _, err := reopened.Start(ctx, "must not dispatch", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium)); err == nil {
 		t.Fatal("corrupt provider state was accepted")
 	}
@@ -506,22 +529,25 @@ func TestCorruptDurableProviderStatePreventsDispatch(t *testing.T) {
 	closeRuntime(t, reopened)
 }
 
-func openCodexFixture(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client) runtimeui.Service {
+func openCodexFixture(t *testing.T, ctx context.Context, paths platform.Paths, workspace platform.Workspace, client *http.Client) runtimeui.Service {
 	t.Helper()
-	return openCodexFixtureWithClient(t, ctx, database, sessionID, workspace, client)
+	return openCodexFixtureWithClient(t, ctx, paths, workspace, client)
 }
 
-func openCodexFixtureWithClient(t *testing.T, ctx context.Context, database string, sessionID session.ID, workspace string, client *http.Client) runtimeui.Service {
+func openCodexFixtureWithClient(t *testing.T, ctx context.Context, paths platform.Paths, workspace platform.Workspace, client *http.Client) runtimeui.Service {
 	t.Helper()
 	resolver, err := codexmodel.NewResolver(client)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := runtimeui.Open(ctx, database, sessionID, workspace, runtimeui.Config{
+	service, err := runtimeui.Open(ctx, paths, workspace, runtimeui.Config{
 		Resolver:  resolver,
 		AgentName: "codex", SystemPrompt: "Be helpful and use no tools.",
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
 	return service

@@ -16,14 +16,33 @@ import (
 
 type fakeService struct {
 	load          runtimeui.Snapshot
+	loadErr       error
+	loads         int
 	start         runtimeui.ActionResult
 	startErr      error
 	startedPrompt string
 	startedConfig runtimeui.StartConfig
 	interrupts    int
+
+	page        runtimeui.ConversationPage
+	listErr     error
+	listCursors []string
+	listBlock   chan struct{}
+	created     runtimeui.SelectionResult
+	createErr   error
+	creates     int
+	selected    runtimeui.SelectionResult
+	selectErr   error
+	selectedIDs []session.ID
+	renamed     runtimeui.ConversationInfo
+	renameErr   error
+	renames     []string
 }
 
-func (s *fakeService) Load(context.Context) (runtimeui.Snapshot, error) { return s.load, nil }
+func (s *fakeService) Load(context.Context) (runtimeui.Snapshot, error) {
+	s.loads++
+	return s.load, s.loadErr
+}
 func (s *fakeService) Start(_ context.Context, prompt string, cfg runtimeui.StartConfig) (runtimeui.ActionResult, error) {
 	s.startedPrompt = prompt
 	s.startedConfig = cfg
@@ -32,6 +51,37 @@ func (s *fakeService) Start(_ context.Context, prompt string, cfg runtimeui.Star
 func (s *fakeService) InterruptActive(context.Context) error                   { s.interrupts++; return nil }
 func (s *fakeService) Recover(context.Context) (runtimeui.ActionResult, error) { return s.start, nil }
 func (s *fakeService) Close(context.Context) error                             { return nil }
+func (s *fakeService) ListConversations(ctx context.Context, cursor string) (runtimeui.ConversationPage, error) {
+	s.listCursors = append(s.listCursors, cursor)
+	if s.listBlock != nil {
+		select {
+		case <-ctx.Done():
+			return runtimeui.ConversationPage{}, ctx.Err()
+		case <-s.listBlock:
+		}
+	}
+	return s.page, s.listErr
+}
+func (s *fakeService) CreateConversation(context.Context, uint64) (runtimeui.SelectionResult, error) {
+	s.creates++
+	return s.created, s.createErr
+}
+func (s *fakeService) SelectConversation(_ context.Context, id session.ID, _ uint64) (runtimeui.SelectionResult, error) {
+	s.selectedIDs = append(s.selectedIDs, id)
+	return s.selected, s.selectErr
+}
+func (s *fakeService) RenameConversation(_ context.Context, _ session.ID, _ uint64, title string) (runtimeui.ConversationInfo, error) {
+	s.renames = append(s.renames, title)
+	return s.renamed, s.renameErr
+}
+
+// newTestModel builds a model whose startup already resolved, matching the
+// state every keyboard test assumes.
+func newTestModel(service runtimeui.Service, cfg Config) *Model {
+	model := New(context.Background(), service, cfg)
+	model.startup = startupReady
+	return model
+}
 
 type fakeRun struct {
 	id        session.RunID
@@ -91,7 +141,7 @@ func TestModelLoadSubmitAndTerminalReplacement(t *testing.T) {
 
 func TestKeysPasteAndResize(t *testing.T) {
 	service := &fakeService{}
-	model := New(context.Background(), service, testDisplayConfig())
+	model := newTestModel(service, testDisplayConfig())
 	model.Update(tea.WindowSizeMsg{Width: 1, Height: 1})
 	if model.viewport.Width() < 1 || model.viewport.Height() < 1 {
 		t.Fatal("negative dimensions")
@@ -119,17 +169,17 @@ func TestKeysPasteAndResize(t *testing.T) {
 }
 
 func TestViewIsSemanticAtNarrowWidth(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleUser, Content: "界é\tשלום"}, {Role: runtimeui.RoleAssistant, Content: strings.Repeat("x", 100)}}}
 	model.resize(8, 6)
 	view := model.View()
-	if !view.AltScreen || !strings.Contains(view.Content, "Codex subscription") {
+	if !view.AltScreen || !strings.Contains(view.Content, "Convers") {
 		t.Fatalf("view = %#v", view)
 	}
 }
 
 func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	run := newFakeRun("current")
 	model.pending = run
 	model.lastVersion = 5
@@ -147,7 +197,7 @@ func TestModelRejectsStaleAndPriorRunSnapshots(t *testing.T) {
 }
 
 func TestModelAppliesHigherVersionToolOnlySnapshot(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	run := newFakeRun("current")
 	model.pending = run
 	model.lastVersion = 1
@@ -161,7 +211,7 @@ func TestModelAppliesHigherVersionToolOnlySnapshot(t *testing.T) {
 }
 
 func TestRecoveryWaitingReplacesDeadlineAndRetainsDraft(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.snapshot.Phase = runtimeui.PhaseRecoveryWaiting
 	model.textarea.SetValue("unsent")
 	_, recoverCommand := model.Update(recoveryDueMsg{})
@@ -190,7 +240,7 @@ func TestSnapshotPhaseDrivesKeysStatusAndEditing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.phase), func(t *testing.T) {
-			model := New(context.Background(), &fakeService{}, testDisplayConfig())
+			model := newTestModel(&fakeService{}, testDisplayConfig())
 			model.snapshot.Phase = tt.phase
 			model.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 			if got := model.textarea.Value() != ""; got != tt.editable {

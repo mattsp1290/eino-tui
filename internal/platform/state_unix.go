@@ -17,8 +17,7 @@ func secureDirectory(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("state path is not a secure directory")
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != os.Geteuid() {
+	if !ownedByCurrentUser(info) {
 		return fmt.Errorf("state directory is not owned by current user")
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
@@ -52,8 +51,7 @@ func secureDatabase(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("state database is not a regular file")
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != os.Geteuid() {
+	if !ownedByCurrentUser(info) {
 		return fmt.Errorf("state database is not owned by current user")
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
@@ -64,4 +62,13 @@ func secureDatabase(path string) error {
 		return fmt.Errorf("state database verification failed")
 	}
 	return nil
+}
+
+// OwnedByCurrentUser is the shared ownership check for every private state
+// file: directories, database files, lock files, and preference records.
+func OwnedByCurrentUser(info os.FileInfo) bool { return ownedByCurrentUser(info) }
+
+func ownedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
 }

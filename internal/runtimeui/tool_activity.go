@@ -10,6 +10,7 @@ import (
 	"github.com/mattsp1290/eino-tools/fileops"
 	"github.com/mattsp1290/eino-tools/glob"
 	"github.com/mattsp1290/eino-tools/search"
+	"github.com/mattsp1290/eino-tui/internal/conversationtools"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
@@ -40,7 +41,7 @@ func summarizeToolCall(call session.ToolCall) (ToolActivity, bool) {
 
 func knownToolName(name string) bool {
 	switch name {
-	case fileops.NameRead, fileops.NameList, glob.Name, search.Name:
+	case fileops.NameRead, fileops.NameList, glob.Name, search.Name, conversationtools.Name:
 		return true
 	default:
 		return false
@@ -65,6 +66,10 @@ func mapToolStatus(status session.ToolCallStatus) (ToolStatus, bool) {
 }
 
 func toolSubject(name string, input json.RawMessage) (string, bool) {
+	if name == conversationtools.Name {
+		// The title argument is user/model text, never a path; it is not shown.
+		return conversationtools.Subject, true
+	}
 	if !utf8.Valid(input) {
 		return "", false
 	}

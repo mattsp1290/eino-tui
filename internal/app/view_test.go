@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 )
 
 func TestViewUsesOnlySanitizedPresentationState(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	malicious := "safe\x1b]0;title\a\x1b[31m red\x1b[0m\u202e"
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{Role: runtimeui.RoleAssistant, Content: textsafe.Display(malicious)}}}
 	model.resize(40, 12)
@@ -27,7 +26,7 @@ func TestViewUsesOnlySanitizedPresentationState(t *testing.T) {
 }
 
 func TestViewUsesImmutableBoundedCodexMetadata(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, Config{
+	model := newTestModel(&fakeService{}, Config{
 		InitialSelection:       agentmodel.Selection{ProviderID: codexmodel.ProviderID, ModelID: "gpt-5.6"},
 		InitialReasoningEffort: codexmodel.ReasoningEffortMedium,
 	})
@@ -38,7 +37,7 @@ func TestViewUsesImmutableBoundedCodexMetadata(t *testing.T) {
 	}
 	model.resize(100, 15)
 	content := model.View().Content
-	for _, want := range []string{"eino-tui · Codex subscription · gpt-5.6 (gpt-5.6) · medium", "Codex:", "Codex (streaming):", "Streaming Codex response…"} {
+	for _, want := range []string{"eino-tui · Conversation · Codex subscription · gpt-5.6 (gpt-5.6) · medium", "Codex:", "Codex (streaming):", "Streaming Codex response…"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing %q in %q", want, content)
 		}
@@ -46,7 +45,7 @@ func TestViewUsesImmutableBoundedCodexMetadata(t *testing.T) {
 	if strings.Count(content, "gpt-5.6") != 2 || strings.Contains(content, "TOKEN") {
 		t.Fatalf("unsafe/repeated model metadata: %q", content)
 	}
-	unsafe := New(context.Background(), &fakeService{}, Config{
+	unsafe := newTestModel(&fakeService{}, Config{
 		InitialSelection:       agentmodel.Selection{ProviderID: codexmodel.ProviderID, ModelID: agentmodel.ID(strings.Repeat("p", 129) + "\n/account/SECRET")},
 		InitialReasoningEffort: "SECRET",
 	})
@@ -58,7 +57,7 @@ func TestViewUsesImmutableBoundedCodexMetadata(t *testing.T) {
 }
 
 func TestViewRendersToolLifecycleInMessageOrderAndSuppressesDuplicates(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	tool := runtimeui.ToolActivity{ID: "call", Name: "file_read", Subject: "internal/app/view.go", Status: runtimeui.ToolRunning}
 	model.snapshot = runtimeui.Snapshot{
 		Phase:    runtimeui.PhaseRunning,
@@ -79,7 +78,7 @@ func TestViewRendersToolLifecycleInMessageOrderAndSuppressesDuplicates(t *testin
 }
 
 func TestViewRendersToolOnlyAndSanitizesDefensively(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.snapshot = runtimeui.Snapshot{Phase: runtimeui.PhaseRunning, LiveMessages: []runtimeui.Message{{
 		ID: "request", Role: runtimeui.RoleAssistant,
 		Tools: []runtimeui.ToolActivity{{ID: "call", Name: "search\x1b[31m", Subject: "safe\x1b]0;SECRET\a\npath", Status: runtimeui.ToolCompleted}},
@@ -101,7 +100,7 @@ func TestViewRendersEveryFixedToolStatus(t *testing.T) {
 	}
 	for _, status := range statuses {
 		t.Run(string(status), func(t *testing.T) {
-			model := New(context.Background(), &fakeService{}, testDisplayConfig())
+			model := newTestModel(&fakeService{}, testDisplayConfig())
 			model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{
 				ID: "request", Role: runtimeui.RoleAssistant,
 				Tools: []runtimeui.ToolActivity{{ID: "call", Name: "file_list", Subject: ".", Status: status}},
@@ -116,7 +115,7 @@ func TestViewRendersEveryFixedToolStatus(t *testing.T) {
 }
 
 func TestStableTranscriptCacheIncludesNestedToolChanges(t *testing.T) {
-	model := New(context.Background(), &fakeService{}, testDisplayConfig())
+	model := newTestModel(&fakeService{}, testDisplayConfig())
 	model.snapshot = runtimeui.Snapshot{Messages: []runtimeui.Message{{ID: "request", Role: runtimeui.RoleAssistant, Tools: []runtimeui.ToolActivity{{ID: "call", Name: "glob", Subject: "*.go · in .", Status: runtimeui.ToolPending}}}}}
 	model.resize(60, 12)
 	first := model.stableTranscript

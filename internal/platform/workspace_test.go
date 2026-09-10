@@ -24,7 +24,7 @@ func TestCanonicalWorkspaceAndSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b || WorkspaceSessionID(a) != WorkspaceSessionID(b) {
+	if a != b || WorkspaceID(a) != WorkspaceID(b) {
 		t.Fatalf("identity mismatch: %q %q", a, b)
 	}
 	cwd, err := os.Getwd()
@@ -47,10 +47,10 @@ func TestCanonicalWorkspaceAndSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if WorkspaceSessionID(otherCanonical) == WorkspaceSessionID(a) {
+	if WorkspaceID(otherCanonical) == WorkspaceID(a) {
 		t.Fatal("different workspaces shared an id")
 	}
-	if got := string(WorkspaceSessionID(a)); len(got) != len("workspace-v2-")+64 {
+	if got := WorkspaceID(a); len(got) != len("workspace-")+64 {
 		t.Fatalf("unexpected id %q", got)
 	}
 	file := filepath.Join(root, "file")
@@ -65,13 +65,12 @@ func TestCanonicalWorkspaceAndSessionIdentity(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSessionIDStableFixture(t *testing.T) {
-	want := "workspace-v2-8e3755075f60db112335cfd5ca43a142d3514e96ca30d09a56ead6c6bb320331"
-	if got := string(WorkspaceSessionID("/tmp/workspace")); got != want {
+func TestWorkspaceIDStableFixture(t *testing.T) {
+	want := "workspace-9e4461b3f02ed91978850984d5f9d92ee0168b66eca5f063c8f0388aaae32be6"
+	if got := WorkspaceID("/tmp/workspace"); got != want {
 		t.Fatalf("fixture = %q", got)
 	}
-	const previous = "workspace-v1-32dabbe4792e0560188b21970685d0dc39524d366f759bd5abf87a77d2675e29"
-	if want == previous {
-		t.Fatal("v2 identity reused the v1 domain")
+	if !ValidWorkspaceID(want) {
+		t.Fatal("stable fixture does not match ValidWorkspaceID shape")
 	}
 }

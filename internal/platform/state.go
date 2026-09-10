@@ -10,9 +10,17 @@ import (
 
 const StateOverride = "EINO_TUI_STATE_DIR"
 
+// DatabaseFile is the current storage generation. Older sessions.db files and
+// their sidecars are left untouched; there is no migration or import.
+const DatabaseFile = "conversations-v1.db"
+
+// WorkspacesDirectory holds host-owned per-workspace preference records.
+const WorkspacesDirectory = "workspaces"
+
 type Paths struct {
-	Directory string
-	Database  string
+	Directory  string
+	Database   string
+	Workspaces string
 }
 
 // ResolveStateDir applies the supported platform precedence without reading globals.
@@ -55,7 +63,9 @@ func ProductionStateDir() (string, error) {
 	return ResolveStateDir(env, home, config, runtime.GOOS)
 }
 
-// PrepareState creates and verifies the private state directory and database file.
+// PrepareState creates and verifies the private state directory, the current
+// database file, and the workspace preference directory. A fresh database is
+// an empty regular file; schema initialization happens in the runtime.
 func PrepareState(ctx context.Context, directory string) (Paths, error) {
 	if err := ctx.Err(); err != nil {
 		return Paths{}, err
@@ -69,9 +79,16 @@ func PrepareState(ctx context.Context, directory string) (Paths, error) {
 	if err := secureDirectory(directory); err != nil {
 		return Paths{}, err
 	}
-	database := filepath.Join(directory, "sessions.db")
+	database := filepath.Join(directory, DatabaseFile)
 	if err := secureDatabase(database); err != nil {
 		return Paths{}, err
 	}
-	return Paths{Directory: directory, Database: database}, nil
+	workspaces := filepath.Join(directory, WorkspacesDirectory)
+	if err := os.Mkdir(workspaces, 0o700); err != nil && !os.IsExist(err) {
+		return Paths{}, fmt.Errorf("create workspace preference directory: %w", err)
+	}
+	if err := secureDirectory(workspaces); err != nil {
+		return Paths{}, err
+	}
+	return Paths{Directory: directory, Database: database, Workspaces: workspaces}, nil
 }

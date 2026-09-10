@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,7 +14,6 @@ import (
 	"github.com/mattsp1290/eino-agent/config"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
-	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-agent/stream"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
@@ -45,26 +43,28 @@ func (t *countingTail) Close()                                              { t.
 
 func TestSequentialTurnsCancelEveryTailSubscription(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := sqlite.Open(ctx, paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	store := openTestStore(t, ctx, paths.Database)
 	tail := &countingTail{tail: stream.NewTail(64), drained: make(chan struct{}, 1)}
 	plans, err := composition.NewRegistry(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := config.Snapshot{Agent: config.Agent{Name: "demo"}, Metadata: map[string]string{"workspace_root": workspace}}
+	snapshot := config.Snapshot{Agent: config.Agent{Name: "demo"}, Metadata: map[string]string{"workspace_id": workspace.ID, "workspace_root": workspace.Root}}
 	orchestrator, err := agentruntime.NewStreamingOrchestrator(agentruntime.WithStore(store), agentruntime.WithModelResolver(demomodel.DynamicResolver(func(context.Context) error { return nil })), agentruntime.WithEventSink(tail), agentruntime.WithIDGenerator(platform.IDs{}), agentruntime.WithRunPlanProvider(plans), agentruntime.WithOwnerID("subscriber-test"), agentruntime.WithQueueSize(16), agentruntime.WithLease(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat := newService(ctx, store, tail, orchestrator, nil, platform.WorkspaceSessionID(workspace), snapshot)
+	chat := newService(ctx, store, tail, orchestrator, nil, platform.NewPreferenceStore(paths.Workspaces), workspace, snapshot)
+	selectForTest(chat, "sequential-turns")
+	now := time.Now().UTC()
+	seed := session.Session{
+		ID: chat.selected.id, WorkspaceID: workspace.ID, Directory: workspace.Root,
+		Metadata: numberMetadata(chat.selected.number), CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := chat.store.CreateSession(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
 	for index := 0; index < 10; index++ {
 		result, err := chat.Start(ctx, "turn", fixtureStartConfig())
 		if err != nil {
@@ -111,8 +111,12 @@ func TestFinishPumpClassifiesOnlyStableProviderSentinels(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			chat := newOrchestratorTestService(t, orchestratorFunc{})
+			now := time.Now().UTC()
+			if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.selected.id, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
 			run := newRun("classification-run")
-			active := &activeRun{run: run, handle: settledHandle{id: "classification-run"}, cancelRun: func() {}, cancelTail: func() {}, interrupt: make(chan string, 1)}
+			active := &activeRun{run: run, handle: settledHandle{id: "classification-run"}, conv: *chat.selected, cancelRun: func() {}, cancelTail: func() {}, interrupt: make(chan string, 1)}
 			chat.active, chat.state = active, stateRunning
 			chat.finishPump(active, Snapshot{}, agentruntime.Result{RunID: "classification-run", Status: session.RunFailed, Error: test.err}, 1, false)
 			snapshot, ok := run.Next(context.Background())
@@ -211,15 +215,8 @@ func TestPumpPanicsCannotStrandRun(t *testing.T) {
 
 	t.Run("during terminal projection", func(t *testing.T) {
 		ctx := context.Background()
-		workspace := t.TempDir()
-		paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-		if err != nil {
-			t.Fatal(err)
-		}
+		paths, workspace := fixtureWorkspace(t)
+		opened := openResolvedFixture(t, ctx, paths, workspace)
 		chat := opened.(*service)
 		chat.store = &panicListStore{durableStore: chat.store, panicAt: 2}
 		result, err := chat.Start(ctx, "pump panic user", fixtureStartConfig())
@@ -241,15 +238,8 @@ func TestPumpPanicsCannotStrandRun(t *testing.T) {
 
 func TestPostAdmissionProjectionFailureStillReturnsAdmittedRunAndReconciles(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	opened := openResolvedFixture(t, ctx, paths, workspace)
 	chat := opened.(*service)
 	failing := &failListStore{durableStore: chat.store}
 	failing.remaining.Store(1)

@@ -281,6 +281,12 @@ func pickerHint(width int, candidates ...string) string {
 }
 
 func compactPickerState(width, height int, state, shortState, hint string) []string {
+	return compactDialogState(width, height, "Model & reasoning", state, shortState, hint)
+}
+
+// compactDialogState renders a titled status dialog that always keeps its
+// controls reachable, even on one- or two-row terminals.
+func compactDialogState(width, height int, title, state, shortState, hint string) []string {
 	if height <= 1 {
 		for _, candidate := range []string{shortState + " · " + hint, shortState + " " + hint, hint} {
 			if boundedLine(candidate, width) == candidate {
@@ -292,7 +298,7 @@ func compactPickerState(width, height int, state, shortState, hint string) []str
 	if height == 2 {
 		return []string{state, hint}
 	}
-	return []string{"Model & reasoning", state, hint}
+	return []string{title, state, hint}
 }
 
 func (m *Model) compactPickerSelection(width int) []string {
