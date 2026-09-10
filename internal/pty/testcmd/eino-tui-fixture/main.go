@@ -29,17 +29,11 @@ type fixtureSubscription struct {
 }
 
 func openFixture(ctx context.Context, paths platform.Paths, workspace platform.Workspace, resolver model.Resolver) (runtimeui.Service, error) {
-	service, err := runtimeui.Open(ctx, paths, workspace, runtimeui.Config{
+	// Like production, the application's own Init performs the first Load.
+	return runtimeui.Open(ctx, paths, workspace, runtimeui.Config{
 		Resolver:  resolver,
 		AgentName: "fixture", SystemPrompt: "Return only the configured deterministic fixture response.",
 	})
-	if err != nil {
-		return nil, err
-	}
-	if _, err := service.Load(ctx); err != nil {
-		return nil, err
-	}
-	return service, nil
 }
 
 func (s fixtureSubscription) LoginDevice(context.Context) error {

@@ -303,15 +303,16 @@ func (m *Model) applyLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 	if id := msg.snapshot.Conversation.ID; id != "" && id != m.current.ID {
 		// A reconciled or startup identity change is a switch: both the
 		// outgoing and the destination drafts are preserved, never evicted.
-		switch {
-		case m.current.ID == "":
-			m.textarea.SetValue(m.drafts[id])
-			delete(m.drafts, id)
-			m.recountDrafts()
-		case m.draftFits(m.textarea.Value()):
+		// A reconcile cannot be refused, so the draft budget (a pre-mutation
+		// gate) does not apply here: both drafts are always kept.
+		if m.current.ID == "" {
+			if m.textarea.Value() == "" {
+				m.textarea.SetValue(m.drafts[id])
+				delete(m.drafts, id)
+				m.recountDrafts()
+			}
+		} else {
 			m.switchDrafts(m.current.ID, id)
-		default:
-			msg.snapshot.Notice = noticeDraftBudget
 		}
 		m.installConversation(msg.snapshot.Conversation)
 	}

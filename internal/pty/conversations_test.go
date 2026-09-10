@@ -18,7 +18,7 @@ import (
 // reposition escape sequence, so this checks for its distinguishing words
 // independently rather than requiring one contiguous substring match.
 func containsDraftTwo(text string) bool {
-	return strings.Contains(text, "unsent") && strings.Contains(text, "draft") && strings.Contains(text, "two")
+	return strings.Contains(text, "unsent draft") && strings.Contains(text, "two")
 }
 
 // TestConversationsCreateSwitchAndRelaunchThroughSymlink exercises the
@@ -91,11 +91,11 @@ func TestConversationsCreateSwitchAndRelaunchThroughSymlink(t *testing.T) {
 	process.write(t, "unsent draft two")
 	time.Sleep(300 * time.Millisecond)
 
+	pickerAt := len(process.text())
 	process.write(t, "\x1bs")
 	process.waitStatus(t, "Conversations · page 1")
-	if opened := process.text(); !strings.Contains(opened, "Conversation 2 — second question") || !strings.Contains(opened, "Conversation 1 — first question") {
-		t.Fatalf("picker missing both conversations: %q", opened)
-	}
+	process.waitTextAfter(t, pickerAt, "Conversation 2 — second question", 3*time.Second)
+	process.waitTextAfter(t, pickerAt, "Conversation 1 — first question", 3*time.Second)
 
 	// Conversation 2 (current) is highlighted first; move down to
 	// Conversation 1 and open it. The "Opening conversation…" dialog keeps
@@ -125,6 +125,8 @@ func TestConversationsCreateSwitchAndRelaunchThroughSymlink(t *testing.T) {
 	switchToTwoAt := len(process.text())
 	process.write(t, "\x1b[A")
 	process.write(t, "\r")
+	process.waitStatus(t, "Conversation 2 — second question")
+	time.Sleep(150 * time.Millisecond)
 	process.waitStatus(t, "Conversation 2 — second question")
 	if reopened := process.text()[switchToTwoAt:]; !containsDraftTwo(reopened) {
 		t.Fatalf("draft not restored on switch back: %q", reopened)
@@ -333,5 +335,55 @@ func TestConversationDialogsRestoreTerminalOnQuitAndPanicFreeResize(t *testing.T
 	}
 	if strings.Contains(output, "panic") || strings.Contains(output, "eino-tui stopped") {
 		t.Fatalf("panic-free resize regressed: %q", output)
+	}
+}
+
+// TestConversationDialogExclusionRenameErrorsAndWideTitles covers the plan's
+// remaining terminal items: the conversation picker cannot open over the
+// model selector, a blank rename keeps the editor open without saving, and a
+// wide-glyph title renders in the header and picker without corrupting them.
+func TestConversationDialogExclusionRenameErrorsAndWideTitles(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "fixture")
+	buildBinary(t, fixture, "./internal/pty/testcmd/eino-tui-fixture")
+	process := startTerminal(t, fixture, nil, t.TempDir(), filepath.Join(t.TempDir(), "state"))
+	process.waitText(t, "Codex subscription ready", 3*time.Second)
+
+	process.write(t, "\x1bm")
+	process.waitStatus(t, "Model & reasoning")
+	blockedAt := len(process.text())
+	process.write(t, "\x1bs")
+	time.Sleep(100 * time.Millisecond)
+	if output := process.text(); strings.Contains(output[blockedAt:], "Conversations · page 1") {
+		t.Fatal("conversation picker opened over the model selector")
+	}
+	process.write(t, "\x1b")
+	process.waitStatus(t, "Codex subscription ready")
+
+	process.write(t, "\x1br")
+	process.waitStatus(t, "Rename conversation")
+	process.write(t, "\x15")
+	process.write(t, "\r")
+	time.Sleep(100 * time.Millisecond)
+	process.waitStatus(t, "Rename conversation")
+	if strings.Contains(process.text(), "Saving conversation title") {
+		t.Fatal("blank title was submitted")
+	}
+	wide := strings.Repeat("界", 70)
+	process.write(t, wide)
+	process.write(t, "\r")
+	process.waitStatus(t, strings.Repeat("界", 20))
+	process.waitStatus(t, "Codex subscription ready")
+	pickerAt := len(process.text())
+	process.write(t, "\x1bs")
+	process.waitStatus(t, "Conversations · page 1")
+	process.waitTextAfter(t, pickerAt, strings.Repeat("界", 20), 3*time.Second)
+	process.write(t, "\x1b")
+	process.waitStatus(t, "Codex subscription ready")
+	process.write(t, "\x03")
+	if err := process.waitExit(t, 3*time.Second); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if output := process.text(); !strings.Contains(output, "\x1b[?1049l") || strings.Contains(output, "eino-tui stopped") {
+		t.Fatalf("terminal not restored cleanly: %q", output)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -670,4 +671,67 @@ func TestCreateReconcilesCounterWhenPreferencesVanishWhileOpen(t *testing.T) {
 		seen[item.Number] = true
 	}
 	closeService(t, service)
+}
+
+// sessionBlockingStore blocks ListMessages for one session until released,
+// leaving every other conversation readable.
+type sessionBlockingStore struct {
+	durableStore
+	blocked session.ID
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *sessionBlockingStore) ListMessages(ctx context.Context, id session.ID, cursor session.ReplayCursor) (session.ReplayBatch, error) {
+	if id == s.blocked {
+		s.once.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return session.ReplayBatch{}, ctx.Err()
+		}
+	}
+	return s.durableStore.ListMessages(ctx, id, cursor)
+}
+
+func TestLoadRacingACommittedSelectionReportsStaleIdentity(t *testing.T) {
+	ctx := context.Background()
+	paths, workspace := fixtureWorkspace(t)
+	opened := openResolvedFixture(t, ctx, paths, workspace)
+	chat := opened.(*service)
+	loaded, _ := chat.Load(ctx)
+	first := loaded.Conversation
+	finishTurn(t, chat, "history of one")
+	created, err := chat.CreateConversation(ctx, first.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := created.Snapshot.Conversation
+	if _, err := chat.SelectConversation(ctx, first.ID, second.Generation); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := chat.Load(ctx)
+	blocking := &sessionBlockingStore{durableStore: chat.store, blocked: first.ID, entered: make(chan struct{}), release: make(chan struct{})}
+	chat.store = blocking
+	type outcome struct {
+		snapshot Snapshot
+		err      error
+	}
+	results := make(chan outcome, 1)
+	go func() { snapshot, err := chat.Load(ctx); results <- outcome{snapshot, err} }()
+	<-blocking.entered
+	if _, err := chat.SelectConversation(ctx, second.ID, current.Conversation.Generation); err != nil {
+		t.Fatalf("select during blocked load: %v", err)
+	}
+	close(blocking.release)
+	got := <-results
+	if !errors.Is(got.err, ErrStaleGeneration) {
+		t.Fatalf("load racing a committed selection returned %#v, err=%v", got.snapshot.Conversation, got.err)
+	}
+	fresh, err := chat.Load(ctx)
+	if err != nil || fresh.Conversation.ID != second.ID || len(fresh.Messages) != 0 {
+		t.Fatalf("fresh load=%#v err=%v", fresh, err)
+	}
+	closeService(t, chat)
 }

@@ -447,3 +447,65 @@ func TestHeaderPrioritizesConversationTitleWhenNarrow(t *testing.T) {
 		t.Fatal("title reached the window title")
 	}
 }
+
+func TestReconcileToAnotherConversationSwapsDraftsRegardlessOfBudget(t *testing.T) {
+	for _, overBudget := range []bool{false, true} {
+		service := &fakeService{selectErr: runtimeui.ErrReconciliationRequired}
+		model := readyConversationModel(service)
+		model.drafts["conv-2"] = "conv-2 old draft"
+		model.recountDrafts()
+		model.textarea.SetValue("secret draft for conv-1")
+		_, open := model.Update(altKey('s'))
+		service.page = twoConversations()
+		model.Update(open())
+		model.Update(plainKey('k'))
+		_, sel := model.Update(enterKey())
+		if overBudget {
+			// The budget gate only refuses a switch before it starts; once the
+			// mutation is in flight a reconcile must still keep every draft.
+			model.drafts["other"] = strings.Repeat("x", MaxDraftBytes)
+			model.recountDrafts()
+		}
+		model.Update(sel())
+		if model.conv.mode != convReconcile {
+			t.Fatalf("mode=%v", model.conv.mode)
+		}
+		service.load = runtimeui.Snapshot{Phase: runtimeui.PhaseIdle, Conversation: conversationInfo("conv-2", 2, 2, "Conversation 2 — second")}
+		_, reload := model.Update(plainKey('r'))
+		model.Update(reload())
+		if model.current.ID != "conv-2" || model.textarea.Value() != "conv-2 old draft" || model.drafts["conv-1"] != "secret draft for conv-1" {
+			t.Fatalf("overBudget=%v editor=%q drafts=%#v", overBudget, model.textarea.Value(), model.drafts)
+		}
+		if _, ok := model.drafts["conv-2"]; ok {
+			t.Fatal("restored draft still retained")
+		}
+	}
+	// Startup restores a retained draft only into an empty editor.
+	service := &fakeService{load: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle, Conversation: conversationInfo("conv-1", 1, 1, "Conversation 1")}}
+	model := New(context.Background(), service, testDisplayConfig())
+	model.drafts["conv-1"] = "retained"
+	model.recountDrafts()
+	model.Update(model.Init()())
+	if model.textarea.Value() != "retained" || len(model.drafts) != 0 {
+		t.Fatalf("startup restore editor=%q drafts=%#v", model.textarea.Value(), model.drafts)
+	}
+}
+
+func TestFailedRetrySelectKeepsCommittedConversationRetryable(t *testing.T) {
+	service := &fakeService{createErr: runtimeui.ErrPreferenceFailed, created: runtimeui.SelectionResult{CommittedID: "conv-9"}, selectErr: runtimeui.ErrPreferenceFailed}
+	model := readyConversationModel(service)
+	_, create := model.Update(altKey('n'))
+	model.Update(create())
+	_, retry := model.Update(enterKey())
+	model.Update(retry())
+	if model.conv.mode != convRetrySelect || model.conv.pendingID != "conv-9" {
+		t.Fatalf("failed retry mode=%v pending=%s", model.conv.mode, model.conv.pendingID)
+	}
+	service.selectErr = nil
+	service.selected = runtimeui.SelectionResult{Snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle, Conversation: conversationInfo("conv-9", 2, 9, "Conversation 9")}}
+	_, again := model.Update(enterKey())
+	model.Update(again())
+	if model.current.ID != "conv-9" || service.creates != 1 || len(service.selectedIDs) != 2 {
+		t.Fatalf("second retry current=%s creates=%d selects=%v", model.current.ID, service.creates, service.selectedIDs)
+	}
+}

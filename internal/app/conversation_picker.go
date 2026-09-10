@@ -195,15 +195,13 @@ func (m *Model) applyCreatedResult(msg conversationCreatedMsg) tea.Cmd {
 		case errors.Is(msg.err, runtimeui.ErrReconciliationRequired):
 			m.conv.mode = convReconcile
 			m.conv.err = noticeReconcileRequired
-		case errors.Is(msg.err, runtimeui.ErrClosing):
-			m.closeConversationDialog()
 		case msg.result.CommittedID != "":
 			// The session exists durably; offer selection retry, never a
 			// silent close that could disagree with the persisted selection.
 			m.conv.mode = convRetrySelect
 			m.conv.pendingID = msg.result.CommittedID
 			m.conv.err = noticeCreatedNotSelected
-		case errors.Is(msg.err, context.Canceled):
+		case errors.Is(msg.err, context.Canceled), errors.Is(msg.err, runtimeui.ErrClosing):
 			m.closeConversationDialog()
 		case errors.Is(msg.err, runtimeui.ErrPreferenceInvalid):
 			m.closeConversationDialog()
@@ -231,7 +229,13 @@ func (m *Model) applySelectedResult(msg conversationSelectedMsg) tea.Cmd {
 		case errors.Is(msg.err, runtimeui.ErrReconciliationRequired):
 			m.conv.mode = convReconcile
 			m.conv.err = noticeReconcileRequired
-		case errors.Is(msg.err, context.Canceled), errors.Is(msg.err, runtimeui.ErrClosing):
+		case errors.Is(msg.err, runtimeui.ErrClosing):
+			m.closeConversationDialog()
+		case m.conv.pendingID != "" && msg.id == m.conv.pendingID:
+			// A committed-but-unselected conversation stays retryable.
+			m.conv.mode = convRetrySelect
+			m.conv.err = noticeCreatedNotSelected
+		case errors.Is(msg.err, context.Canceled):
 			m.closeConversationDialog()
 		case errors.Is(msg.err, runtimeui.ErrPreferenceInvalid):
 			m.closeConversationDialog()
