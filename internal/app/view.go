@@ -145,26 +145,83 @@ func snapshotIDs(messages []runtimeui.Message) (map[string]bool, map[string]bool
 	return messageIDs, toolIDs
 }
 
+// conversationTitle is the display-safe header label. Titles never reach the
+// terminal window title, logs, or diagnostics.
+func (m *Model) conversationTitle() string {
+	title := oneLine(m.current.Title)
+	if title == "" {
+		return "Conversation"
+	}
+	return title
+}
+
+// lineWidth is the bound for single-line chrome; an unknown terminal size
+// leaves lines unclipped rather than collapsing them to an ellipsis.
+func (m *Model) lineWidth() int {
+	if m.terminalWidth < 1 {
+		return unknownWidth
+	}
+	return m.terminalWidth
+}
+
+const unknownWidth = 1 << 20
+
+func (m *Model) headerLine() string {
+	title := m.conversationTitle()
+	modelText := m.selected.displayName + " (" + string(m.selected.selection.ModelID) + ") · " + m.selected.effort
+	candidates := []string{
+		"eino-tui · " + title + " · Codex subscription · " + modelText,
+		"eino-tui · " + title + " · " + string(m.selected.selection.ModelID) + " · " + m.selected.effort,
+		title + " · " + string(m.selected.selection.ModelID) + " · " + m.selected.effort,
+		title,
+	}
+	for _, candidate := range candidates {
+		if m.terminalWidth <= 0 || ansi.StringWidth(candidate) <= m.terminalWidth {
+			return candidate
+		}
+	}
+	return candidates[len(candidates)-1]
+}
+
 func (m *Model) View() tea.View {
-	headerText := "eino-tui · Codex subscription · " + m.selected.displayName + " (" + string(m.selected.selection.ModelID) + ") · " + m.selected.effort
-	if m.terminalWidth > 0 && ansi.StringWidth(headerText) > m.terminalWidth {
-		headerText = "eino-tui · " + string(m.selected.selection.ModelID) + " · " + m.selected.effort
-	}
-	header := headerStyle.Render(boundedLine(headerText, m.terminalWidth))
-	notice := m.snapshot.Notice
-	if notice == "" {
-		notice = phaseText(m.snapshot.Phase)
-	}
+	width := m.lineWidth()
+	header := headerStyle.Render(boundedLine(m.headerLine(), width))
 	var content string
-	if m.picker.mode != pickerClosed {
+	switch {
+	case m.startup != startupReady && m.conv.mode != convReconcile:
+		status := noticeStartupLoading
+		if m.startup == startupFailed {
+			status = noticeStartupFailed
+		}
+		if m.terminalHeight <= 1 {
+			content = boundedLine(status, width)
+		} else {
+			content = header + "\n" + boundedLine(status, width)
+		}
+	case m.conv.mode != convClosed:
+		if m.terminalHeight <= 1 {
+			content = m.conversationView(m.terminalWidth, 1)
+		} else {
+			content = header + "\n" + m.conversationView(m.terminalWidth, m.terminalHeight-1)
+		}
+	case m.picker.mode != pickerClosed:
 		if m.terminalHeight <= 1 {
 			content = m.pickerView(m.terminalWidth, 1)
 		} else {
 			content = header + "\n" + m.pickerView(m.terminalWidth, m.terminalHeight-1)
 		}
-	} else {
-		footer := boundedLine("Enter send · Alt+Enter newline · Alt+M models · Esc interrupt · Ctrl+C quit", m.terminalWidth)
-		content = header + "\n" + notice + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + footer
+	default:
+		notice := m.snapshot.Notice
+		if notice == "" {
+			notice = phaseText(m.snapshot.Phase)
+		}
+		footer := pickerHint(width,
+			"Enter send · Alt+Enter newline · Alt+S conversations · Alt+N new · Alt+R rename · Alt+M models · Esc interrupt · Ctrl+C quit",
+			"Enter send · Alt+S conversations · Alt+N new · Alt+R rename · Alt+M models · Ctrl+C quit",
+			"Alt+S conversations · Alt+M models · Ctrl+C quit",
+			"Alt+S · Alt+M · Ctrl+C",
+		)
+		content = header + "\n" + boundedLine(notice, width) + "\n" + m.viewport.View() + "\n" + m.textarea.View() + "\n" + boundedLine(footer, width)
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true

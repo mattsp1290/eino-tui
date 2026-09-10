@@ -9,7 +9,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	agentmodel "github.com/mattsp1290/eino-agent/model"
-	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/app"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
@@ -36,7 +35,7 @@ type Dependencies struct {
 	NewSubscription  func(io.Writer) Subscription
 	SignalContext    func(context.Context) (context.Context, context.CancelFunc)
 	NewResolver      func(*http.Client) (agentmodel.Resolver, error)
-	OpenService      func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error)
+	OpenService      func(context.Context, platform.Paths, platform.Workspace, runtimeui.Config) (runtimeui.Service, error)
 	NewApplication   func(context.Context, runtimeui.Service, context.CancelFunc, app.Config) (tea.Model, *app.Fatal)
 	NewProgram       func(tea.Model, context.Context, io.Reader, io.Writer) Program
 }

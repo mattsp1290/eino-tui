@@ -94,6 +94,18 @@ func (*testService) InterruptActive(context.Context) error { return nil }
 func (*testService) Recover(context.Context) (runtimeui.ActionResult, error) {
 	return runtimeui.ActionResult{}, nil
 }
+func (*testService) ListConversations(context.Context, string) (runtimeui.ConversationPage, error) {
+	return runtimeui.ConversationPage{}, nil
+}
+func (*testService) CreateConversation(context.Context, uint64) (runtimeui.SelectionResult, error) {
+	return runtimeui.SelectionResult{}, runtimeui.ErrUnavailable
+}
+func (*testService) SelectConversation(context.Context, session.ID, uint64) (runtimeui.SelectionResult, error) {
+	return runtimeui.SelectionResult{}, runtimeui.ErrUnavailable
+}
+func (*testService) RenameConversation(context.Context, session.ID, uint64, string) (runtimeui.ConversationInfo, error) {
+	return runtimeui.ConversationInfo{}, runtimeui.ErrUnavailable
+}
 func (s *testService) Close(ctx context.Context) error {
 	s.closed = true
 	if s.close != nil {
@@ -130,7 +142,7 @@ func TestRunLifecyclePanicsAreRedacted(t *testing.T) {
 					panic("secret /tmp/prepare")
 				}
 			case "open service":
-				deps.OpenService = func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
+				deps.OpenService = func(context.Context, platform.Paths, platform.Workspace, runtimeui.Config) (runtimeui.Service, error) {
 					panic("secret /tmp/open")
 				}
 			case "close service":
@@ -158,7 +170,7 @@ func testDeps(t *testing.T, service runtimeui.Service, program *testProgram) Dep
 		NewSubscription:  func(io.Writer) Subscription { return testSubscription{status: subscription.LoggedIn} },
 		SignalContext:    context.WithCancel,
 		NewResolver:      codexmodel.NewResolver,
-		OpenService: func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
+		OpenService: func(context.Context, platform.Paths, platform.Workspace, runtimeui.Config) (runtimeui.Service, error) {
 			return service, nil
 		},
 		NewApplication: func(ctx context.Context, service runtimeui.Service, cancel context.CancelFunc, cfg app.Config) (tea.Model, *app.Fatal) {
@@ -205,7 +217,7 @@ func TestRunExitPoliciesAndRedaction(t *testing.T) {
 func TestRunToolCatalogFailureUsesFixedDiagnostic(t *testing.T) {
 	service := &testService{}
 	deps := testDeps(t, service, &testProgram{})
-	deps.OpenService = func(context.Context, string, session.ID, string, runtimeui.Config) (runtimeui.Service, error) {
+	deps.OpenService = func(context.Context, platform.Paths, platform.Workspace, runtimeui.Config) (runtimeui.Service, error) {
 		return nil, fmt.Errorf("%w: TOKEN /private/workspace/missing-rg", runtimeui.ErrToolsUnavailable)
 	}
 	var stderr bytes.Buffer
@@ -391,7 +403,7 @@ func TestRunChatCompositionOrderAndIdentity(t *testing.T) {
 			}
 			return codexmodel.NewResolver(got)
 		},
-		OpenService: func(_ context.Context, _ string, _ session.ID, _ string, cfg runtimeui.Config) (runtimeui.Service, error) {
+		OpenService: func(_ context.Context, _ platform.Paths, _ platform.Workspace, cfg runtimeui.Config) (runtimeui.Service, error) {
 			calls = append(calls, "open")
 			captured = cfg
 			return service, nil

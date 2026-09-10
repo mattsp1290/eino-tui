@@ -8,10 +8,13 @@ import (
 	"testing"
 
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
+	"github.com/mattsp1290/eino-tui/internal/platform"
 )
 
 func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 	database := filepath.Join(t.TempDir(), "must-not-exist.db")
+	paths := platform.Paths{Database: database, Workspaces: t.TempDir()}
+	workspace := platform.Workspace{Root: t.TempDir(), ID: platform.WorkspaceID("/x")}
 	valid := Config{
 		Resolver:  demomodel.Resolver(nil),
 		AgentName: "fixture", SystemPrompt: "test",
@@ -28,7 +31,7 @@ func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := valid
 			test.edit(&cfg)
-			if _, err := Open(context.Background(), database, "session", t.TempDir(), cfg); err == nil {
+			if _, err := Open(context.Background(), paths, workspace, cfg); err == nil {
 				t.Fatal("invalid configuration accepted")
 			}
 			if _, err := os.Stat(database); !os.IsNotExist(err) {
@@ -40,14 +43,22 @@ func TestOpenValidatesConfigurationBeforeSQLite(t *testing.T) {
 
 func TestOpenFailsClosedWhenReadOnlyCatalogIsUnavailable(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	database := filepath.Join(t.TempDir(), "catalog.db")
+	ctx := context.Background()
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := platform.IdentifyWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{Resolver: demomodel.DynamicResolver(nil), AgentName: "fixture", SystemPrompt: "test"}
-	service, err := Open(context.Background(), database, "session", t.TempDir(), cfg)
+	service, err := Open(ctx, paths, workspace, cfg)
 	if service != nil || !errors.Is(err, ErrToolsUnavailable) {
 		t.Fatalf("service=%v error=%v", service, err)
 	}
 	// A second SQLite open proves the failed constructor released its handle.
-	store, openErr := os.OpenFile(database, os.O_RDWR, 0)
+	store, openErr := os.OpenFile(paths.Database, os.O_RDWR, 0)
 	if openErr != nil {
 		t.Fatal(openErr)
 	}

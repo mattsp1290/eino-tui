@@ -3,7 +3,6 @@ package runtimeui
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,7 +10,7 @@ import (
 	"github.com/mattsp1290/eino-agent/config"
 	"github.com/mattsp1290/eino-agent/extension"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
-	"github.com/mattsp1290/eino-agent/store/sqlite"
+	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/stream"
 	agenttools "github.com/mattsp1290/eino-agent/tools"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
@@ -21,15 +20,8 @@ import (
 
 func TestServiceInterruptSettlesRunningToolBeforeTerminalSnapshot(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := sqlite.Open(ctx, paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	store := openTestStore(t, ctx, paths.Database)
 	tail := stream.NewTail(64)
 	registry, err := composition.NewRegistry(nil)
 	if err != nil {
@@ -70,9 +62,18 @@ func TestServiceInterruptSettlesRunningToolBeforeTerminalSnapshot(t *testing.T) 
 	snapshot := config.Snapshot{
 		Agent:    config.Agent{Name: "fixture", SystemPrompt: "Use the fixture tool."},
 		Tools:    config.ToolConfig{Enabled: []string{"file_read"}},
-		Metadata: map[string]string{"workspace_root": workspace},
+		Metadata: map[string]string{"workspace_id": workspace.ID, "workspace_root": workspace.Root},
 	}
-	chat := newService(ctx, store, tail, orchestrator, mount, platform.WorkspaceSessionID(workspace), snapshot)
+	chat := newService(ctx, store, tail, orchestrator, []mountCloser{mount}, platform.NewPreferenceStore(paths.Workspaces), workspace, snapshot)
+	selectForTest(chat, "tool-interrupt-fixture")
+	now := time.Now().UTC()
+	seed := session.Session{
+		ID: chat.selected.id, WorkspaceID: workspace.ID, Directory: workspace.Root,
+		Metadata: numberMetadata(chat.selected.number), CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := chat.store.CreateSession(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
 	result, err := chat.Start(ctx, "inspect the fixture", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -114,16 +115,8 @@ func TestServiceInterruptSettlesRunningToolBeforeTerminalSnapshot(t *testing.T) 
 
 func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(root, "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessionID := platform.WorkspaceSessionID(root)
-	service, err := openFixture(ctx, paths.Database, sessionID, root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	service := openResolvedFixture(t, ctx, paths, workspace)
 	loaded, err := service.Load(ctx)
 	if err != nil || len(loaded.Messages) != 0 {
 		t.Fatalf("initial load = %#v, %v", loaded, err)
@@ -148,10 +141,7 @@ func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := openFixture(ctx, paths.Database, sessionID, root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := openResolvedFixture(t, ctx, paths, workspace)
 	replay, err := reopened.Load(ctx)
 	if err != nil || len(replay.Messages) != 2 {
 		t.Fatalf("replay = %#v, %v", replay, err)
@@ -163,15 +153,8 @@ func TestServiceStreamsPersistsAndReplays(t *testing.T) {
 
 func TestServiceInterruptKeepsAdmittedUserAndOmitsEmptyAssistant(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(root, "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(root), root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	service := openResolvedFixture(t, ctx, paths, workspace)
 	result, err := service.Start(ctx, "interrupt me", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)

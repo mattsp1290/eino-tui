@@ -3,7 +3,6 @@ package runtimeui
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/demomodel"
-	"github.com/mattsp1290/eino-tui/internal/platform"
 )
 
 type trackingMount struct {
@@ -37,7 +35,7 @@ func TestServiceOwnsMountCleanupOnce(t *testing.T) {
 	chat := newOrchestratorTestService(t, runtime)
 	mountErr := errors.New("mount cleanup")
 	mount := &trackingMount{err: mountErr}
-	chat.mount = mount
+	chat.mounts = []mountCloser{mount}
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := chat.Close(deadline); !errors.Is(err, mountErr) {
@@ -53,15 +51,8 @@ func TestServiceOwnsMountCleanupOnce(t *testing.T) {
 
 func TestServiceSlowConsumerCannotBlockSettlementOrClose(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	service := openResolvedFixture(t, ctx, paths, workspace)
 	result, err := service.Start(ctx, "slow consumer", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -135,15 +126,8 @@ func TestStartFreezesDistinctValidatedSelections(t *testing.T) {
 
 func TestServiceRejectsConcurrentStartAndSupportsSequentialTurns(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	service := openResolvedFixture(t, ctx, paths, workspace)
 	first, err := service.Start(ctx, "first", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -173,15 +157,8 @@ func TestServiceRejectsConcurrentStartAndSupportsSequentialTurns(t *testing.T) {
 
 func TestConcurrentCloseDuringActiveRunIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := openFixtureWithResolver(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, demomodel.DynamicResolver(demomodel.TimerWait(10*time.Second)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	opened := openResolvedFixtureWithResolver(t, ctx, paths, workspace, demomodel.DynamicResolver(demomodel.TimerWait(10*time.Second)))
 	result, err := opened.Start(ctx, "close while active", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)

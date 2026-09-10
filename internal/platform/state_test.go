@@ -49,7 +49,7 @@ func TestPrepareStatePermissionsAndSymlinkRejection(t *testing.T) {
 	if err := os.Mkdir(badDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(badDir, "sessions.db")); err != nil {
+	if err := os.Symlink(target, filepath.Join(badDir, DatabaseFile)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := PrepareState(context.Background(), badDir); err == nil {
@@ -59,7 +59,7 @@ func TestPrepareStatePermissionsAndSymlinkRejection(t *testing.T) {
 	if err := os.Mkdir(broadDir, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	broadDB := filepath.Join(broadDir, "sessions.db")
+	broadDB := filepath.Join(broadDir, DatabaseFile)
 	if err := os.WriteFile(broadDB, nil, 0o666); err != nil {
 		t.Fatal(err)
 	}

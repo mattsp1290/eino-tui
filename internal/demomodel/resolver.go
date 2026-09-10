@@ -181,3 +181,53 @@ func resolverWithSteps(wait Waiter, steps []fake.Step) model.Resolver {
 		return resolved, nil
 	})
 }
+
+// RenameToolTitle is the fixed title the rename fixture asks the runtime to set.
+const RenameToolTitle = "Agent renamed conversation"
+
+// DynamicRenameToolResolver drives the real rename tool loop without
+// credentials. It requests one rename_conversation call, then answers after
+// observing the tool-result message supplied by the runtime.
+func DynamicRenameToolResolver(wait Waiter) model.Resolver {
+	if wait == nil {
+		wait = TimerWait(50 * time.Millisecond)
+	}
+	return model.ResolverFunc(func(_ context.Context, selection model.Selection, runtime model.Runtime) (model.Resolved, error) {
+		effort := runtime.Options[codexmodel.ReasoningEffortOptionKey]
+		if selection.ProviderID == "" || selection.ModelID == "" || selection.Variant != "" || effort == "" {
+			return model.Resolved{}, fmt.Errorf("invalid fixture selection")
+		}
+		return model.Resolved{
+			Provider: model.Provider{ID: selection.ProviderID, Name: "Credential-free rename fixture provider", Source: "fixture"},
+			Model:    model.Descriptor{ID: selection.ModelID, ProviderID: selection.ProviderID, Name: string(selection.ModelID), ContextLimit: 8192, OutputLimit: 512, Capabilities: map[string]bool{"streaming": true, "tools": true}, Options: map[string]string{codexmodel.ReasoningEffortOptionKey: effort}},
+			Streamer: renameFixtureStreamer{wait: wait},
+		}, nil
+	})
+}
+
+type renameFixtureStreamer struct{ wait Waiter }
+
+func (s renameFixtureStreamer) StreamProvider(ctx context.Context, request model.Request) (*einoschema.StreamReader[model.StreamDelta], error) {
+	hasToolResult := false
+	for _, message := range request.Messages {
+		if message != nil && message.Role == einoschema.Tool {
+			hasToolResult = true
+		}
+	}
+	reader, writer := einoschema.Pipe[model.StreamDelta](1)
+	go func() {
+		defer writer.Close()
+		if err := s.wait(ctx); err != nil {
+			writer.Send(model.StreamDelta{}, err)
+			return
+		}
+		message := einoschema.AssistantMessage("I’ll rename this conversation.", []einoschema.ToolCall{{
+			ID: "fixture-rename-call", Type: "function", Function: einoschema.FunctionCall{Name: "rename_conversation", Arguments: `{"title":"` + RenameToolTitle + `"}`},
+		}})
+		if hasToolResult {
+			message = einoschema.AssistantMessage("Conversation renamed as requested.", nil)
+		}
+		writer.Send(model.StreamDelta{Message: message}, nil)
+	}()
+	return reader, nil
+}

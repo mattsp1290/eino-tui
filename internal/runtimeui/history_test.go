@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mattsp1290/eino-agent/session"
-	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 )
 
@@ -86,10 +85,11 @@ func TestHistoryToolProjectionUsesPartOrderAndIgnoresUnavailableRecords(t *testi
 
 func TestHistoryProjectsAllDurableToolStatusesWithoutResultOrError(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "tools.db"))
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	store := openTestStore(t, ctx, paths.Database)
 	defer store.Close()
 	now := time.Now().UTC()
 	sessionID := session.ID("tool-history")
@@ -174,15 +174,8 @@ func TestHistoryProjectsAllDurableToolStatusesWithoutResultOrError(t *testing.T)
 
 func TestHistoryProjectionOmitsInterruptedEmptyAssistant(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	chat, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	chat := openResolvedFixture(t, ctx, paths, workspace)
 	result, err := chat.Start(ctx, "retained user", fixtureStartConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -208,10 +201,11 @@ func TestHistoryProjectionOmitsInterruptedEmptyAssistant(t *testing.T) {
 
 func TestHistoryProjectionPagesAndExcludesReasoningAndState(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "history.db"))
+	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	store := openTestStore(t, ctx, paths.Database)
 	defer store.Close()
 	now := time.Now().UTC()
 	sessionID := session.ID("session-history")

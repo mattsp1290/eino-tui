@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/mattsp1290/eino-agent/session"
-	agentsqlite "github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
@@ -22,9 +21,9 @@ import (
 
 func TestCodexFileReadToolRoundTripAndSQLiteReplay(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	const fixture = "hello from a Unicode fixture: 雀\n"
-	if err := os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte(fixture), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workspaceDir, "fixture.txt"), []byte(fixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
@@ -32,8 +31,11 @@ func TestCodexFileReadToolRoundTripAndSQLiteReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := newFileReadToolTransport()
-	sessionID := platform.WorkspaceSessionID(workspace)
-	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, &http.Client{Transport: transport})
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	started, err := service.Start(ctx, "read the fixture", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +70,7 @@ func TestCodexFileReadToolRoundTripAndSQLiteReplay(t *testing.T) {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Fatalf("decode provider request %d: %v", i, err)
 		}
-		if names := providerToolNames(t, payload.Tools); strings.Join(names, ",") != "file_read,file_list,glob,search" || payload.ParallelToolCalls {
+		if names := providerToolNames(t, payload.Tools); strings.Join(names, ",") != "file_read,file_list,glob,search,rename_conversation" || payload.ParallelToolCalls {
 			t.Fatalf("request %d tools=%v parallel=%v", i, names, payload.ParallelToolCalls)
 		}
 	}
@@ -102,20 +104,17 @@ func TestCodexFileReadToolRoundTripAndSQLiteReplay(t *testing.T) {
 	}
 	closeRuntime(t, service)
 
-	store, err := agentsqlite.Open(ctx, paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store, db := openInspectionStore(t, ctx, paths.Database)
 	call, err := store.GetToolCall(ctx, "call_read_1")
 	if err != nil || call.Status != session.ToolCallCompleted || call.ResultPartID == "" {
-		_ = store.Close()
+		db.Close()
 		t.Fatalf("durable call status=%q result=%q err=%v", call.Status, call.ResultPartID, err)
 	}
-	if err := store.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, &http.Client{Transport: transport})
+	reopened := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	replay, err := reopened.Load(ctx)
 	if err != nil || len(replay.Messages) != 3 || len(replay.Messages[1].Tools) != 1 || replay.Messages[1].Tools[0] != activity || replay.Messages[2].Content != "The fixture says hello." {
 		t.Fatalf("replay = %#v, err=%v", replay, err)
@@ -126,8 +125,8 @@ func TestCodexFileReadToolRoundTripAndSQLiteReplay(t *testing.T) {
 func TestCodexLexicalPathEscapeIsRejectedBeforeToolPersistence(t *testing.T) {
 	ctx := context.Background()
 	parent := t.TempDir()
-	workspace := filepath.Join(parent, "workspace")
-	if err := os.Mkdir(workspace, 0o700); err != nil {
+	workspaceDir := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(workspaceDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	const sentinel = "OUTSIDE_LEXICAL_SENTINEL"
@@ -139,7 +138,11 @@ func TestCodexLexicalPathEscapeIsRejectedBeforeToolPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := newPathToolTransport("../outside.txt")
-	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	started, err := service.Start(ctx, "try an invalid path", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -152,11 +155,8 @@ func TestCodexLexicalPathEscapeIsRejectedBeforeToolPersistence(t *testing.T) {
 		t.Fatal("outside sentinel reached snapshot")
 	}
 	closeRuntime(t, service)
-	store, err := agentsqlite.Open(ctx, paths.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store, db := openInspectionStore(t, ctx, paths.Database)
+	defer db.Close()
 	if _, err := store.GetToolCall(ctx, "call_path"); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("lexically invalid call was persisted: %v", err)
 	}
@@ -164,13 +164,13 @@ func TestCodexLexicalPathEscapeIsRejectedBeforeToolPersistence(t *testing.T) {
 
 func TestCodexSymlinkEscapeReturnsStructuredResultWithCompletedLifecycle(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	const sentinel = "OUTSIDE_SYMLINK_SENTINEL"
 	if err := os.WriteFile(outside, []byte(sentinel), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(workspace, "link.txt")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(workspaceDir, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
@@ -178,8 +178,11 @@ func TestCodexSymlinkEscapeReturnsStructuredResultWithCompletedLifecycle(t *test
 		t.Fatal(err)
 	}
 	transport := newPathToolTransport("link.txt")
-	sessionID := platform.WorkspaceSessionID(workspace)
-	service := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, &http.Client{Transport: transport})
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	started, err := service.Start(ctx, "inspect the link", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +214,7 @@ func TestCodexSymlinkEscapeReturnsStructuredResultWithCompletedLifecycle(t *test
 		t.Fatal("symlink escape did not return a structured path_escape result")
 	}
 	closeRuntime(t, service)
-	reopened := openCodexFixture(t, ctx, paths.Database, sessionID, workspace, &http.Client{Transport: transport})
+	reopened := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	replay, err := reopened.Load(ctx)
 	if err != nil || len(replay.Messages) != 3 || len(replay.Messages[1].Tools) != 1 || replay.Messages[1].Tools[0].Status != runtimeui.ToolCompleted {
 		t.Fatalf("replay=%#v err=%v", replay, err)
@@ -226,8 +229,12 @@ func TestCodexNonAllowlistedShellIsRejectedBeforeExecutionAndHiddenFromSnapshots
 		secretArgs = "SECRET_PROVIDER_TOOL_ARGS"
 	)
 	ctx := context.Background()
-	workspace := t.TempDir()
+	workspaceDir := t.TempDir()
 	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := platform.IdentifyWorkspace(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +249,7 @@ func TestCodexNonAllowlistedShellIsRejectedBeforeExecutionAndHiddenFromSnapshots
 		}, "\n\n")
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}, nil
 	})
-	service := openCodexFixture(t, ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, &http.Client{Transport: transport})
+	service := openCodexFixture(t, ctx, paths, workspace, &http.Client{Transport: transport})
 	started, err := service.Start(ctx, "do not execute provider tools", codexStartConfig(codexmodel.DefaultModel, codexmodel.ReasoningEffortMedium))
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +273,9 @@ func TestCodexNonAllowlistedShellIsRejectedBeforeExecutionAndHiddenFromSnapshots
 		t.Fatalf("provider-controlled response created %d durable tool calls", toolCalls)
 	}
 	var assistantPlaceholders int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE run_id = ? AND role = 'assistant'`, terminal.RunID).Scan(&assistantPlaceholders); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m
+		JOIN runs r ON r.row_key = m.run_key
+		WHERE r.id = ? AND m.role = 'assistant'`, []byte(terminal.RunID)).Scan(&assistantPlaceholders); err != nil {
 		t.Fatal(err)
 	}
 	// Failed runs retain one content-free assistant placeholder as a recovery
@@ -275,7 +284,10 @@ func TestCodexNonAllowlistedShellIsRejectedBeforeExecutionAndHiddenFromSnapshots
 		t.Fatalf("rejected provider response left %d durable assistant placeholders", assistantPlaceholders)
 	}
 	var assistantParts int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p JOIN messages m ON m.id = p.message_id WHERE m.run_id = ? AND m.role = 'assistant'`, terminal.RunID).Scan(&assistantParts); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM parts p
+		JOIN messages m ON m.row_key = p.message_key
+		JOIN runs r ON r.row_key = m.run_key
+		WHERE r.id = ? AND m.role = 'assistant'`, []byte(terminal.RunID)).Scan(&assistantParts); err != nil {
 		t.Fatal(err)
 	}
 	if assistantParts != 0 {

@@ -3,14 +3,12 @@ package runtimeui
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mattsp1290/eino-agent/config"
 	agentruntime "github.com/mattsp1290/eino-agent/runtime"
 	"github.com/mattsp1290/eino-agent/session"
-	"github.com/mattsp1290/eino-agent/store/sqlite"
 	"github.com/mattsp1290/eino-agent/stream"
 	"github.com/mattsp1290/eino-tui/internal/platform"
 )
@@ -43,11 +41,11 @@ func (o orchestratorFunc) Resume(ctx context.Context, runID session.RunID) (agen
 func newOrchestratorTestService(t *testing.T, runtime orchestrator) *service {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "service.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return newService(ctx, store, stream.NewTail(8), runtime, nil, session.ID("service-test"), config.Snapshot{})
+	paths, workspace := fixtureWorkspace(t)
+	store := openTestStore(t, ctx, paths.Database)
+	chat := newService(ctx, store, stream.NewTail(8), runtime, nil, platform.NewPreferenceStore(paths.Workspaces), workspace, config.Snapshot{})
+	selectForTest(chat, "service-test")
+	return chat
 }
 
 func TestAttemptTransitionsAreIdentityCheckedAndMonotonic(t *testing.T) {
@@ -59,7 +57,7 @@ func TestAttemptTransitionsAreIdentityCheckedAndMonotonic(t *testing.T) {
 	}
 	chat := newOrchestratorTestService(t, runtime)
 
-	aborted, err := chat.beginAttempt(context.Background(), stateIdle, stateStarting)
+	aborted, err := chat.beginAttempt(context.Background(), stateIdle, stateStarting, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,18 +67,18 @@ func TestAttemptTransitionsAreIdentityCheckedAndMonotonic(t *testing.T) {
 		t.Fatalf("abort state=%v attempt=%v err=%v", chat.state, chat.attempt, aborted.ctx.Err())
 	}
 
-	committed, err := chat.beginAttempt(context.Background(), stateIdle, stateStarting)
+	committed, err := chat.beginAttempt(context.Background(), stateIdle, stateStarting, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := session.Run{ID: "active", SessionID: chat.sessionID, LeaseUntil: time.Now().Add(time.Minute)}
+	active := session.Run{ID: "active", SessionID: chat.selected.id, LeaseUntil: time.Now().Add(time.Minute)}
 	result, err := chat.commitWaiting(committed, active, nil)
 	chat.finishPending(committed)
 	if err != nil || result.Kind != ActionRecoveryWaiting || chat.state != stateWaiting || chat.attempt != nil {
 		t.Fatalf("commit result=%#v err=%v state=%v attempt=%v", result, err, chat.state, chat.attempt)
 	}
 
-	closing, err := chat.beginAttempt(context.Background(), stateWaiting, stateRecovering)
+	closing, err := chat.beginAttempt(context.Background(), stateWaiting, stateRecovering, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,15 +103,8 @@ func TestAttemptTransitionsAreIdentityCheckedAndMonotonic(t *testing.T) {
 
 func TestInterruptBeforeAdmissionRetainsNoDurableTurn(t *testing.T) {
 	ctx := context.Background()
-	workspace := t.TempDir()
-	paths, err := platform.PrepareState(ctx, filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := openFixture(ctx, paths.Database, platform.WorkspaceSessionID(workspace), workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths, workspace := fixtureWorkspace(t)
+	opened := openResolvedFixture(t, ctx, paths, workspace)
 	chat := opened.(*service)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -204,7 +195,7 @@ func TestCloseCancelsPendingRecover(t *testing.T) {
 	}
 	chat := newOrchestratorTestService(t, runtime)
 	chat.state = stateWaiting
-	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.sessionID, Status: session.RunRunning}
+	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.selected.id, Status: session.RunRunning}
 	result := make(chan error, 1)
 	go func() { _, err := chat.Recover(context.Background()); result <- err }()
 	<-entered
@@ -231,10 +222,10 @@ func TestRecoverResumesCurrentExpiredRun(t *testing.T) {
 	}
 	chat := newOrchestratorTestService(t, runtime)
 	now := time.Now().UTC()
-	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.sessionID, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.selected.id, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	current, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "current-run", SessionID: chat.sessionID, OwnerID: "owner", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Nanosecond)
+	current, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "current-run", SessionID: chat.selected.id, OwnerID: "owner", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Nanosecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +233,7 @@ func TestRecoverResumesCurrentExpiredRun(t *testing.T) {
 		time.Sleep(time.Microsecond)
 	}
 	chat.state = stateWaiting
-	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.sessionID, Status: session.RunInterrupted}
+	chat.recoveryRun = session.Run{ID: "stale-run", SessionID: chat.selected.id, Status: session.RunInterrupted}
 	if _, err := chat.Recover(context.Background()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("recover error=%v", err)
 	}
@@ -267,10 +258,10 @@ func TestContentionCannotPublishWaitingAfterCloseStarts(t *testing.T) {
 	}
 	chat := newOrchestratorTestService(t, runtime)
 	now := time.Now().UTC()
-	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.sessionID, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := chat.store.CreateSession(context.Background(), session.Session{ID: chat.selected.id, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "other-run", SessionID: chat.sessionID, OwnerID: "other", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Minute); err != nil {
+	if _, err := chat.store.AdmitRun(context.Background(), session.Run{ID: "other-run", SessionID: chat.selected.id, OwnerID: "other", ClaimToken: "claim", Status: session.RunPending, CreatedAt: now}, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	waiting := make(chan struct{})

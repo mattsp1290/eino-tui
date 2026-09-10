@@ -12,13 +12,10 @@ import (
 	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-agent/stream"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
+	"github.com/mattsp1290/eino-tui/internal/platform"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
 )
 
-type durableStore interface {
-	session.Store
-	Close() error
-}
 type orchestrator interface {
 	Start(context.Context, agentruntime.Request) (agentruntime.Handle, error)
 	Resume(context.Context, session.RunID) (agentruntime.Handle, error)
@@ -35,27 +32,38 @@ type mountCloser interface {
 type lifecycle uint8
 
 const (
-	stateIdle lifecycle = iota
+	stateUnresolved lifecycle = iota
+	stateIdle
 	stateWaiting
 	stateStarting
 	stateRecovering
 	stateRunning
+	stateMutating
 	stateClosing
 	stateClosed
 )
 
+// service is the one workspace controller: one pool, one tail, one
+// orchestrator, the owned mounts, a stable workspace configuration, and
+// exactly one selected conversation. No background conversation runs here.
 type service struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	store     durableStore
-	tail      tailer
-	runtime   orchestrator
-	mount     mountCloser
-	sessionID session.ID
-	config    config.Snapshot
+	ctx        context.Context
+	cancel     context.CancelFunc
+	readCtx    context.Context
+	cancelRead context.CancelFunc
+	store      durableStore
+	tail       tailer
+	runtime    orchestrator
+	mounts     []mountCloser
+	prefs      *platform.PreferenceStore
+	workspace  platform.Workspace
+	config     config.Snapshot
 
 	mu           sync.Mutex
 	state        lifecycle
+	selected     *conversation
+	generation   uint64
+	reconcile    bool
 	attempt      *attempt
 	active       *activeRun
 	recoveryRun  session.Run
@@ -65,8 +73,12 @@ type service struct {
 	shutdownErr  error
 }
 
+// attempt is one exclusive lifecycle transition. It captures the conversation
+// it operates on so a later selection change can never redirect it.
 type attempt struct {
+	from             lifecycle
 	phase            lifecycle
+	conv             conversation
 	ctx              context.Context
 	cancel           context.CancelFunc
 	stopCallerCancel func() bool
@@ -76,55 +88,69 @@ type attempt struct {
 type activeRun struct {
 	run        *runStream
 	handle     agentruntime.Handle
+	conv       conversation
 	cancelRun  context.CancelFunc
 	cancelTail context.CancelFunc
 	interrupt  chan string
 }
 
-func newService(ctx context.Context, store durableStore, tail tailer, runtime orchestrator, mount mountCloser, sessionID session.ID, snapshot config.Snapshot) *service {
+func newService(ctx context.Context, store durableStore, tail tailer, runtime orchestrator, mounts []mountCloser, prefs *platform.PreferenceStore, workspace platform.Workspace, snapshot config.Snapshot) *service {
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	return &service{ctx: lifetime, cancel: cancel, store: store, tail: tail, runtime: runtime, mount: mount, sessionID: sessionID, config: snapshot, state: stateIdle, shutdownDone: make(chan struct{})}
+	readCtx, cancelRead := context.WithCancel(lifetime)
+	return &service{
+		ctx: lifetime, cancel: cancel, readCtx: readCtx, cancelRead: cancelRead,
+		store: store, tail: tail, runtime: runtime, mounts: mounts, prefs: prefs, workspace: workspace, config: snapshot,
+		state: stateUnresolved, shutdownDone: make(chan struct{}),
+	}
 }
 
-func (s *service) projectHistory(ctx context.Context) ([]Message, error) {
-	return loadHistory(ctx, s.store, s.sessionID)
-}
-
-func (s *service) projectActiveHistory(ctx context.Context, runID session.RunID) (historyProjection, error) {
-	return loadHistoryProjection(ctx, s.store, s.sessionID, runID)
-}
-
+// Load resolves the selected conversation on first use (or after a
+// reconciliation-required failure) and otherwise projects the current one.
 func (s *service) Load(ctx context.Context) (Snapshot, error) {
 	s.mu.Lock()
-	if s.state >= stateClosing {
-		s.mu.Unlock()
+	closing := s.state >= stateClosing
+	resolve := s.selected == nil || s.reconcile
+	s.mu.Unlock()
+	if closing {
 		return Snapshot{}, ErrClosing
 	}
+	if resolve {
+		return s.resolveSelection(ctx)
+	}
+	return s.loadSelected(ctx)
+}
+
+func (s *service) loadSelected(ctx context.Context) (Snapshot, error) {
+	s.mu.Lock()
+	conv := *s.selected
 	s.mu.Unlock()
-	messages, err := s.projectHistory(ctx)
+	s.retryDefaultTitle(ctx, &conv)
+	messages, err := loadHistory(ctx, s.store, conv.id)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return Snapshot{}, fmt.Errorf("%w", ErrUnavailable)
 	}
-	active, activeErr := s.store.ActiveRun(ctx, s.sessionID)
+	active, activeErr := s.store.ActiveRun(ctx, conv.id)
 	if activeErr == nil && !active.Terminal() {
 		s.mu.Lock()
-		if s.state == stateIdle || s.state == stateWaiting {
+		if (s.state == stateIdle || s.state == stateWaiting) && s.selected != nil && s.selected.id == conv.id {
 			s.state = stateWaiting
 			s.recoveryRun = active
 		}
+		info := s.currentInfoLocked()
 		s.mu.Unlock()
-		return Snapshot{Messages: messages, Phase: PhaseRecoveryWaiting, Notice: NoticeRecoveryWaiting, RecoveryAt: active.LeaseUntil}, nil
+		return Snapshot{Messages: messages, Phase: PhaseRecoveryWaiting, Notice: NoticeRecoveryWaiting, RecoveryAt: active.LeaseUntil, Conversation: info}, nil
 	}
 	if activeErr != nil && !errors.Is(activeErr, session.ErrNotFound) {
 		return Snapshot{}, fmt.Errorf("%w", ErrUnavailable)
 	}
 	s.mu.Lock()
-	if s.state == stateWaiting {
+	if s.state == stateWaiting && s.selected != nil && s.selected.id == conv.id {
 		s.state = stateIdle
 		s.recoveryRun = session.Run{}
 	}
+	info := s.currentInfoLocked()
 	s.mu.Unlock()
-	return Snapshot{Messages: messages, Phase: PhaseIdle}, nil
+	return Snapshot{Messages: messages, Phase: PhaseIdle, Conversation: info}, nil
 }
 
 func (s *service) Start(ctx context.Context, prompt string, startConfig StartConfig) (ActionResult, error) {
@@ -132,7 +158,7 @@ func (s *service) Start(ctx context.Context, prompt string, startConfig StartCon
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("%w", ErrInvalidPrompt)
 	}
-	a, err := s.beginAttempt(ctx, stateIdle, stateStarting)
+	a, err := s.beginAttempt(ctx, stateIdle, stateStarting, true)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -148,7 +174,7 @@ func (s *service) Start(ctx context.Context, prompt string, startConfig StartCon
 
 	tailCtx, tailCancel := context.WithCancel(a.ctx)
 	a.cancelTail = tailCancel
-	events, err := s.tail.Subscribe(tailCtx, s.sessionID)
+	events, err := s.tail.Subscribe(tailCtx, a.conv.id)
 	if err != nil {
 		attemptErr := s.attemptError(a)
 		s.abortAttempt(a)
@@ -161,7 +187,9 @@ func (s *service) Start(ctx context.Context, prompt string, startConfig StartCon
 		s.abortAttempt(a)
 		return ActionResult{}, err
 	}
-	handle, err := s.runtime.Start(a.ctx, agentruntime.Request{SessionID: s.sessionID, Message: agentruntime.UserMessage{Content: normalized}, Config: snapshot})
+	handle, err := s.runtime.Start(a.ctx, agentruntime.Request{
+		SessionID: a.conv.id, Message: agentruntime.UserMessage{Content: normalized}, Config: snapshot, Metadata: a.conv.requestMetadata(),
+	})
 	if err != nil {
 		if errors.Is(err, session.ErrSessionBusy) {
 			return s.toWaiting(a)
@@ -185,7 +213,9 @@ func validStartConfig(cfg StartConfig) bool {
 		codexmodel.ValidReasoningEffort(cfg.ReasoningEffort)
 }
 
-func (s *service) beginAttempt(caller context.Context, from, to lifecycle) (*attempt, error) {
+// beginAttempt starts one exclusive transition. requireResolved rejects work
+// on a missing or reconciliation-pending selection with a fixed error.
+func (s *service) beginAttempt(caller context.Context, from, to lifecycle, requireResolved bool) (*attempt, error) {
 	if err := caller.Err(); err != nil {
 		return nil, err
 	}
@@ -194,11 +224,22 @@ func (s *service) beginAttempt(caller context.Context, from, to lifecycle) (*att
 	if s.state >= stateClosing {
 		return nil, ErrClosing
 	}
+	if requireResolved {
+		if s.selected == nil {
+			return nil, ErrNoConversation
+		}
+		if s.reconcile {
+			return nil, ErrReconciliationRequired
+		}
+	}
 	if s.state != from || s.attempt != nil {
 		return nil, ErrBusy
 	}
 	attemptCtx, cancel := context.WithCancel(s.ctx)
-	a := &attempt{phase: to, ctx: attemptCtx, cancel: cancel}
+	a := &attempt{from: from, phase: to, ctx: attemptCtx, cancel: cancel}
+	if s.selected != nil {
+		a.conv = *s.selected
+	}
 	a.stopCallerCancel = context.AfterFunc(caller, cancel)
 	s.attempt = a
 	s.state = to
@@ -220,7 +261,7 @@ func (s *service) abortAttempt(a *attempt) {
 	if s.attempt == a {
 		s.attempt = nil
 		if s.state == a.phase {
-			s.state = stateIdle
+			s.state = a.from
 		}
 	}
 	s.mu.Unlock()
@@ -241,15 +282,33 @@ func (s *service) attemptError(a *attempt) error {
 }
 
 func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events <-chan session.EventRecord, prompt string) (ActionResult, error) {
-	projection, err := s.projectActiveHistory(a.ctx, handle.RunID())
+	conv := a.conv
+	notice := ""
+	if prompt != "" && conv.title == "" {
+		// The message is durably admitted. A title failure is metadata-only:
+		// keep the handle, consume the draft, and retry from history later.
+		titleCtx, cancel := context.WithTimeout(s.ctx, titleInitializationTimeout)
+		title, err := ensureDefaultTitle(titleCtx, s.store, s.workspace.ID, conv.id, conv.number)
+		cancel()
+		if err != nil {
+			notice = NoticeTitleUnavailable
+		} else if title != "" {
+			conv.title = title
+			s.updateTitle(conv.id, title)
+		}
+	}
+	projection, err := loadHistoryProjection(a.ctx, s.store, conv.id, handle.RunID())
 	resync := err != nil || projection.Resync
 	if err != nil {
 		projection.Messages = []Message{{Role: RoleUser, Content: textsafe.Display(prompt), Status: StatusComplete}}
 		projection.LiveMessages = nil
 	}
 	run := newRun(handle.RunID())
-	initial := Snapshot{RunID: handle.RunID(), Version: 1, Messages: cloneMessages(projection.Messages), LiveMessages: cloneMessages(projection.LiveMessages), Phase: PhaseRunning, Resync: resync}
-	active := &activeRun{run: run, handle: handle, cancelRun: a.cancel, cancelTail: a.cancelTail, interrupt: make(chan string, 1)}
+	initial := Snapshot{
+		RunID: handle.RunID(), Version: 1, Messages: cloneMessages(projection.Messages), LiveMessages: cloneMessages(projection.LiveMessages),
+		Phase: PhaseRunning, Resync: resync, Notice: notice, Conversation: conv.info(),
+	}
+	active := &activeRun{run: run, handle: handle, conv: conv, cancelRun: a.cancel, cancelTail: a.cancelTail, interrupt: make(chan string, 1)}
 	s.mu.Lock()
 	closing := s.state >= stateClosing
 	interruptRequested := a.ctx.Err() != nil
@@ -273,7 +332,7 @@ func (s *service) publishAdmitted(a *attempt, handle agentruntime.Handle, events
 }
 
 func (s *service) toWaiting(a *attempt) (ActionResult, error) {
-	active, err := s.store.ActiveRun(a.ctx, s.sessionID)
+	active, err := s.store.ActiveRun(a.ctx, a.conv.id)
 	if err != nil {
 		attemptErr := s.attemptError(a)
 		s.abortAttempt(a)
@@ -282,7 +341,7 @@ func (s *service) toWaiting(a *attempt) (ActionResult, error) {
 		}
 		return ActionResult{}, fmt.Errorf("%w", ErrUnavailable)
 	}
-	messages, _ := s.projectHistory(a.ctx)
+	messages, _ := loadHistory(a.ctx, s.store, a.conv.id)
 	return s.commitWaiting(a, active, messages)
 }
 
@@ -297,17 +356,18 @@ func (s *service) commitWaiting(a *attempt, active session.Run, messages []Messa
 	s.attempt = nil
 	s.state = stateWaiting
 	s.recoveryRun = active
+	info := s.currentInfoLocked()
 	s.mu.Unlock()
 	a.cancel()
 	if a.cancelTail != nil {
 		a.cancelTail()
 	}
-	snapshot := Snapshot{Messages: messages, Phase: PhaseRecoveryWaiting, Notice: NoticeRecoveryWaiting, RecoveryAt: active.LeaseUntil}
+	snapshot := Snapshot{Messages: messages, Phase: PhaseRecoveryWaiting, Notice: NoticeRecoveryWaiting, RecoveryAt: active.LeaseUntil, Conversation: info}
 	return ActionResult{Kind: ActionRecoveryWaiting, Snapshot: snapshot}, nil
 }
 
 func (s *service) Recover(ctx context.Context) (ActionResult, error) {
-	a, err := s.beginAttempt(ctx, stateWaiting, stateRecovering)
+	a, err := s.beginAttempt(ctx, stateWaiting, stateRecovering, true)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -315,12 +375,12 @@ func (s *service) Recover(ctx context.Context) (ActionResult, error) {
 	s.mu.Lock()
 	target := s.recoveryRun
 	s.mu.Unlock()
-	current, activeErr := s.store.ActiveRun(a.ctx, s.sessionID)
+	current, activeErr := s.store.ActiveRun(a.ctx, a.conv.id)
 	if activeErr == nil && !current.Terminal() {
 		target = current
 	}
 	if activeErr == nil && !current.Terminal() && time.Now().Before(current.LeaseUntil) {
-		messages, _ := s.projectHistory(a.ctx)
+		messages, _ := loadHistory(a.ctx, s.store, a.conv.id)
 		return s.commitWaiting(a, current, messages)
 	}
 	if activeErr != nil && !errors.Is(activeErr, session.ErrNotFound) {
@@ -340,7 +400,7 @@ func (s *service) Recover(ctx context.Context) (ActionResult, error) {
 	}
 	tailCtx, tailCancel := context.WithCancel(a.ctx)
 	a.cancelTail = tailCancel
-	events, err := s.tail.Subscribe(tailCtx, s.sessionID)
+	events, err := s.tail.Subscribe(tailCtx, a.conv.id)
 	if err != nil {
 		attemptErr := s.attemptError(a)
 		s.abortAttempt(a)
@@ -408,6 +468,7 @@ func (s *service) shutdown() {
 	}
 	a := s.attempt
 	s.mu.Unlock()
+	s.cancelRead()
 	if a != nil {
 		a.cancel()
 	}
@@ -421,9 +482,11 @@ func (s *service) shutdown() {
 	}
 	s.cancel()
 	var cleanupErr error
-	if s.mount != nil {
-		s.mount.Deactivate()
-		cleanupErr = s.mount.Close(context.Background())
+	for i := len(s.mounts) - 1; i >= 0; i-- {
+		s.mounts[i].Deactivate()
+	}
+	for i := len(s.mounts) - 1; i >= 0; i-- {
+		cleanupErr = errors.Join(cleanupErr, s.mounts[i].Close(context.Background()))
 	}
 	s.tail.Close()
 	s.shutdownErr = errors.Join(cleanupErr, s.store.Close())

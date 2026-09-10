@@ -11,9 +11,23 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	agentmodel "github.com/mattsp1290/eino-agent/model"
+	"github.com/mattsp1290/eino-agent/session"
 	"github.com/mattsp1290/eino-tui/internal/codexmodel"
 	"github.com/mattsp1290/eino-tui/internal/runtimeui"
 	"github.com/mattsp1290/eino-tui/internal/textsafe"
+)
+
+// MaxDraftBytes bounds the total unsent draft text kept for non-selected
+// conversations. Each draft is additionally bounded by textsafe.MaxPromptBytes.
+const MaxDraftBytes = 2 << 20
+
+type startupMode uint8
+
+const (
+	startupLoading startupMode = iota
+	startupReady
+	startupFailed
+	startupReconcile
 )
 
 type Model struct {
@@ -32,6 +46,13 @@ type Model struct {
 	picker           pickerState
 	terminalWidth    int
 	terminalHeight   int
+
+	startup  startupMode
+	loading  bool
+	current  runtimeui.ConversationInfo
+	conv     conversationState
+	drafts   map[session.ID]string
+	draftUse int
 }
 
 type Config struct {
@@ -64,6 +85,9 @@ func New(ctx context.Context, service runtimeui.Service, cfg Config) *Model {
 		snapshot: runtimeui.Snapshot{Phase: runtimeui.PhaseIdle}, catalog: cfg.Catalog,
 		selected: selectedModel{selection: selection, displayName: safeMetadata(string(selection.ModelID), "unknown model", codexmodel.MaxModelDisplayNameBytes), effort: effort},
 		picker:   pickerState{mode: pickerClosed},
+		startup:  startupLoading,
+		conv:     newConversationState(),
+		drafts:   make(map[session.ID]string),
 	}
 }
 
@@ -78,6 +102,7 @@ func safeMetadata(value, fallback string, maxBytes int) string {
 func (m *Model) Init() tea.Cmd { return m.loadCmd() }
 
 func (m *Model) loadCmd() tea.Cmd {
+	m.loading = true
 	return func() tea.Msg { snapshot, err := m.service.Load(m.ctx); return loadedMsg{snapshot: snapshot, err: err} }
 }
 
@@ -120,19 +145,20 @@ func recoveryTimer(ctx context.Context, at time.Time) tea.Cmd {
 	}
 }
 
+// idle reports whether a new turn or conversation mutation may begin.
+func (m *Model) idle() bool {
+	return m.startup == startupReady && m.snapshot.Phase == runtimeui.PhaseIdle
+}
+
+// editing reports whether the prompt editor owns keyboard focus.
+func (m *Model) editing() bool {
+	return m.idle() && m.picker.mode == pickerClosed && m.conv.mode == convClosed
+}
+
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case loadedMsg:
-		if msg.err != nil {
-			m.snapshot.Notice = runtimeui.NoticeUnavailable
-			return m, nil
-		}
-		m.applyLoad(msg.snapshot)
-		m.closePickerIfBusy(msg.snapshot.Phase)
-		if m.snapshot.Phase == runtimeui.PhaseRecoveryWaiting {
-			return m, recoveryTimer(m.ctx, msg.snapshot.RecoveryAt)
-		}
-		return m, nil
+		return m.applyLoaded(msg)
 	case startedMsg:
 		m.closePickerIfBusy(runtimeui.PhaseStarting)
 		if msg.err != nil {
@@ -142,21 +168,28 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if !m.currentGeneration(msg.result.Snapshot.Conversation) {
+			return m, nil
+		}
 		if msg.result.Kind == runtimeui.ActionRecoveryWaiting {
 			m.snapshot = msg.result.Snapshot
 			return m, recoveryTimer(m.ctx, msg.result.Snapshot.RecoveryAt)
 		}
 		m.installRun(msg.result)
+		// The admitted draft is consumed exactly once, for this conversation.
 		m.textarea.SetValue("")
+		delete(m.drafts, m.current.ID)
+		m.recountDrafts()
 		return m, nextCmd(m.ctx, m.pending)
 	case snapshotMsg:
 		if m.pending == nil || msg.run != m.pending || !msg.ok {
 			return m, nil
 		}
-		if msg.snapshot.RunID == m.pending.ID() && msg.snapshot.Version > m.lastVersion {
+		if msg.snapshot.RunID == m.pending.ID() && msg.snapshot.Version > m.lastVersion && m.currentGeneration(msg.snapshot.Conversation) {
 			m.closePickerIfBusy(msg.snapshot.Phase)
 			m.snapshot = msg.snapshot
 			m.lastVersion = msg.snapshot.Version
+			m.applyConversationInfo(msg.snapshot.Conversation)
 			if msg.snapshot.Terminal {
 				m.snapshot.Phase = runtimeui.PhaseIdle
 				m.pending = nil
@@ -182,6 +215,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot.Notice = runtimeui.NoticeRecoveryWaiting
 			return m, recoveryTimer(m.ctx, time.Now().Add(time.Second))
 		}
+		if !m.currentGeneration(msg.result.Snapshot.Conversation) {
+			return m, nil
+		}
 		if msg.result.Kind == runtimeui.ActionRecoveryWaiting {
 			m.snapshot = msg.result.Snapshot
 			return m, recoveryTimer(m.ctx, msg.result.Snapshot.RecoveryAt)
@@ -196,11 +232,25 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case catalogLoadedMsg:
 		m.applyCatalogResult(msg)
 		return m, nil
+	case directoryLoadedMsg:
+		m.applyDirectoryResult(msg)
+		return m, nil
+	case conversationCreatedMsg:
+		return m, m.applyCreatedResult(msg)
+	case conversationSelectedMsg:
+		return m, m.applySelectedResult(msg)
+	case conversationRenamedMsg:
+		m.applyRenamedResult(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
 		return m, nil
 	case tea.PasteMsg:
-		if m.snapshot.Phase != runtimeui.PhaseIdle || m.picker.mode != pickerClosed {
+		if m.conv.mode == convRenaming {
+			m.pasteRename(msg.Content)
+			return m, nil
+		}
+		if !m.editing() {
 			return m, nil
 		}
 		value, err := textsafe.Input(m.textarea.Value() + msg.Content)
@@ -211,7 +261,12 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	if m.snapshot.Phase == runtimeui.PhaseIdle && m.picker.mode == pickerClosed {
+	if m.conv.mode == convRenaming {
+		updated, cmd := m.conv.input.Update(message)
+		m.conv.input = updated
+		return m, cmd
+	}
+	if m.editing() {
 		before := m.textarea.Value()
 		updated, cmd := m.textarea.Update(message)
 		m.textarea = updated
@@ -227,8 +282,61 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *Model) applyLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	if msg.err != nil {
+		switch {
+		case errors.Is(msg.err, runtimeui.ErrReconciliationRequired):
+			m.startup = startupReconcile
+			m.conv.mode = convReconcile
+		case m.startup == startupReady:
+			m.snapshot.Notice = runtimeui.NoticeUnavailable
+		default:
+			m.startup = startupFailed
+		}
+		return m, nil
+	}
+	m.startup = startupReady
+	if m.conv.mode == convReconcile {
+		m.closeConversationDialog()
+	}
+	if msg.snapshot.Conversation.ID != "" && msg.snapshot.Conversation.ID != m.current.ID {
+		m.installConversation(msg.snapshot.Conversation)
+	}
+	m.applyLoad(msg.snapshot)
+	m.closePickerIfBusy(msg.snapshot.Phase)
+	if m.snapshot.Phase == runtimeui.PhaseRecoveryWaiting {
+		return m, recoveryTimer(m.ctx, msg.snapshot.RecoveryAt)
+	}
+	return m, nil
+}
+
+// currentGeneration rejects results produced for a previous selection. A zero
+// generation is accepted for services that do not report conversations.
+func (m *Model) currentGeneration(info runtimeui.ConversationInfo) bool {
+	return info.Generation == 0 || info.Generation == m.current.Generation
+}
+
+func (m *Model) applyConversationInfo(info runtimeui.ConversationInfo) {
+	if info.ID != "" && info.ID == m.current.ID {
+		m.current = info
+	}
+}
+
+// installConversation replaces the selected conversation identity and drops
+// every per-run cache that belonged to the previous one.
+func (m *Model) installConversation(info runtimeui.ConversationInfo) {
+	m.current = info
+	m.pending = nil
+	m.lastVersion = 0
+	m.stableMessages = nil
+	m.stableTranscript = ""
+	m.stableWidth = 0
+}
+
 func (m *Model) applyLoad(snapshot runtimeui.Snapshot) {
 	m.snapshot = snapshot
+	m.applyConversationInfo(snapshot.Conversation)
 	m.refreshTranscript()
 }
 
@@ -237,6 +345,7 @@ func (m *Model) installRun(result runtimeui.ActionResult) {
 	m.snapshot = result.Snapshot
 	m.lastVersion = result.Snapshot.Version
 	m.snapshot.Phase = runtimeui.PhaseRunning
+	m.applyConversationInfo(result.Snapshot.Conversation)
 	m.refreshTranscript()
 }
 
@@ -265,5 +374,34 @@ func (m *Model) resize(width, height int) {
 	m.textarea.SetHeight(inputHeight)
 	m.viewport.SetWidth(contentWidth)
 	m.viewport.SetHeight(viewportHeight)
+	m.conv.input.SetWidth(contentWidth)
 	m.refreshTranscript()
+}
+
+// recountDrafts recomputes the retained draft budget after any change.
+func (m *Model) recountDrafts() {
+	total := 0
+	for _, draft := range m.drafts {
+		total += len(draft)
+	}
+	m.draftUse = total
+}
+
+// draftFits reports whether saving the current editor text for the current
+// conversation would stay within the total draft budget.
+func (m *Model) draftFits(draft string) bool {
+	return m.draftUse-len(m.drafts[m.current.ID])+len(draft) <= MaxDraftBytes
+}
+
+// switchDrafts saves the outgoing editor text and restores the destination's
+// draft. It runs only after a selection succeeded.
+func (m *Model) switchDrafts(from, to session.ID) {
+	if draft := m.textarea.Value(); draft != "" {
+		m.drafts[from] = draft
+	} else {
+		delete(m.drafts, from)
+	}
+	m.textarea.SetValue(m.drafts[to])
+	delete(m.drafts, to)
+	m.recountDrafts()
 }

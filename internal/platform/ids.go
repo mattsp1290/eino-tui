@@ -16,3 +16,8 @@ func (IDs) NewPartID() session.PartID         { return session.PartID(typedID("p
 func (IDs) NewToolCallID() session.ToolCallID { return session.ToolCallID(typedID("tool-call-")) }
 func (IDs) NewEventID() session.EventID       { return session.EventID(typedID("event-")) }
 func (IDs) NewEpochID() session.EpochID       { return session.EpochID(typedID("epoch-")) }
+
+// NewConversationID allocates a random durable conversation identity. Two
+// conversations in one workspace never share an ID, and the ID carries no
+// workspace, path, or ordering information.
+func (IDs) NewConversationID() session.ID { return session.ID(typedID("conversation-")) }

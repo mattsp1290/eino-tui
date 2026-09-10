@@ -17,7 +17,7 @@ import (
 	"github.com/mattsp1290/eino-tui/internal/subscription"
 )
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 const (
 	ExitOK             = 0
@@ -30,15 +30,16 @@ const (
 )
 
 const (
-	startupDiagnostic = "eino-tui could not start; check workspace and state permissions"
-	toolsDiagnostic   = "eino-tui could not load read-only workspace tools; verify required executables"
-	programDiagnostic = "eino-tui stopped because the terminal program failed"
-	forcedDiagnostic  = "eino-tui forced shutdown; the unfinished turn will be recovered on next launch"
-	authDiagnostic    = "eino-tui could not access Codex authentication"
-	loginDiagnostic   = "eino-tui device login failed"
-	loginInterrupted  = "eino-tui device login interrupted"
-	notLoggedIn       = "eino-tui is not logged in; run `eino-tui login`"
-	usageText         = "Usage: eino-tui [--model <startup-model>]\n       eino-tui login\n       eino-tui status\n       eino-tui --help\n       eino-tui --version\n\nIn chat, press Alt+M to choose a model and reasoning effort for later turns."
+	startupDiagnostic  = "eino-tui could not start; check workspace and state permissions"
+	toolsDiagnostic    = "eino-tui could not load read-only workspace tools; verify required executables"
+	databaseDiagnostic = "eino-tui found an unsupported conversation database; choose another state directory with EINO_TUI_STATE_DIR"
+	programDiagnostic  = "eino-tui stopped because the terminal program failed"
+	forcedDiagnostic   = "eino-tui forced shutdown; the unfinished turn will be recovered on next launch"
+	authDiagnostic     = "eino-tui could not access Codex authentication"
+	loginDiagnostic    = "eino-tui device login failed"
+	loginInterrupted   = "eino-tui device login interrupted"
+	notLoggedIn        = "eino-tui is not logged in; run `eino-tui login`"
+	usageText          = "Usage: eino-tui [--model <startup-model>]\n       eino-tui login\n       eino-tui status\n       eino-tui --help\n       eino-tui --version\n\nIn chat, press Alt+M to choose a model and reasoning effort for later turns.\nPress Alt+S to switch conversations, Alt+N to start a new one, and Alt+R to rename the current one."
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps Dependencies) (code int) {
@@ -129,7 +130,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
 	}
-	workspace, err := platform.CanonicalWorkspace(cwd)
+	workspace, err := platform.IdentifyWorkspace(cwd)
 	if err != nil {
 		fmt.Fprintln(stderr, startupDiagnostic)
 		return ExitStartup
@@ -152,13 +153,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	runtimeConfig := runtimeui.Config{
 		Resolver:     resolver,
 		AgentName:    "codex",
-		SystemPrompt: "Be a helpful read-only repository assistant. You may read, list, glob, and search files only inside the workspace. Do not claim write, edit, shell, network, approval, or autonomous execution capabilities.",
+		SystemPrompt: "Be a helpful read-only repository assistant. You may read, list, glob, and search files only inside the workspace, and you may rename the current conversation with rename_conversation when asked or when a task warrants a clearer title. Do not claim write, edit, shell, network, approval, or autonomous execution capabilities.",
 	}
-	service, err = deps.OpenService(commandCtx, paths.Database, platform.WorkspaceSessionID(workspace), workspace, runtimeConfig)
+	service, err = deps.OpenService(commandCtx, paths, workspace, runtimeConfig)
 	if err != nil {
-		if errors.Is(err, runtimeui.ErrToolsUnavailable) {
+		switch {
+		case errors.Is(err, runtimeui.ErrToolsUnavailable):
 			fmt.Fprintln(stderr, toolsDiagnostic)
-		} else {
+		case errors.Is(err, runtimeui.ErrDatabaseUnsupported):
+			fmt.Fprintln(stderr, databaseDiagnostic)
+		default:
 			fmt.Fprintln(stderr, startupDiagnostic)
 		}
 		return ExitStartup

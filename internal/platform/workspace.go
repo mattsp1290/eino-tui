@@ -6,11 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/mattsp1290/eino-agent/session"
+	"regexp"
 )
 
-const workspaceDomain = "eino-tui/workspace-session/v2\x00"
+const workspaceIdentityDomain = "eino-tui/workspace-identity/v1\x00"
+
+var workspaceIDPattern = regexp.MustCompile(`^workspace-[0-9a-f]{64}$`)
+
+// Workspace is the immutable launch identity shared by every conversation
+// created from one canonical directory. ID never contains the raw path.
+type Workspace struct {
+	Root string
+	ID   string
+}
 
 // CanonicalWorkspace resolves an existing directory to one stable launch path.
 func CanonicalWorkspace(path string) (string, error) {
@@ -33,8 +41,24 @@ func CanonicalWorkspace(path string) (string, error) {
 	return resolved, nil
 }
 
-// WorkspaceSessionID avoids putting a raw local path in durable identifiers.
-func WorkspaceSessionID(canonical string) session.ID {
-	digest := sha256.Sum256([]byte(workspaceDomain + canonical))
-	return session.ID("workspace-v2-" + hex.EncodeToString(digest[:]))
+// IdentifyWorkspace canonicalizes a launch path and derives its stable identity.
+// Absolute, relative, and symlink spellings of one directory share an identity.
+func IdentifyWorkspace(path string) (Workspace, error) {
+	canonical, err := CanonicalWorkspace(path)
+	if err != nil {
+		return Workspace{}, err
+	}
+	return Workspace{Root: canonical, ID: WorkspaceID(canonical)}, nil
 }
+
+// WorkspaceID hashes the canonical path so durable records and preference
+// filenames never carry a raw local path. Conversation IDs are allocated
+// separately and randomly; this value only scopes them.
+func WorkspaceID(canonical string) string {
+	digest := sha256.Sum256([]byte(workspaceIdentityDomain + canonical))
+	return "workspace-" + hex.EncodeToString(digest[:])
+}
+
+// ValidWorkspaceID reports whether a value has the exact shape produced by
+// WorkspaceID, which keeps preference filenames path-safe.
+func ValidWorkspaceID(value string) bool { return workspaceIDPattern.MatchString(value) }
